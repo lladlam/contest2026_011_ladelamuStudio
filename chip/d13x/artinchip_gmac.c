@@ -565,8 +565,15 @@ static void d13x_receive(FAR struct d13x_gmac_s *priv)
   FAR struct d13x_gmac_desc_s *desc;
   uint32_t status;
   unsigned int length;
+  unsigned int processed = 0;
 
-  for (;;)
+  /* Bound each LPWORK pass to one descriptor ring.  On a busy broadcast
+   * network the DMA can otherwise refill descriptors as quickly as they are
+   * returned, starving TX notifications and making socket sends wait
+   * indefinitely.
+   */
+
+  while (processed < GMAC_RX_COUNT)
     {
       desc = &g_rxdesc[priv->rxhead];
       d13x_cache_invalidate(desc, sizeof(*desc));
@@ -632,6 +639,7 @@ static void d13x_receive(FAR struct d13x_gmac_s *priv)
       desc->status = DESC_OWN;
       d13x_cache_clean(desc, sizeof(*desc));
       priv->rxhead = (priv->rxhead + 1) % GMAC_RX_COUNT;
+      processed++;
     }
 
   putreg32(getreg32(GMAC_REG(GMAC_RXDMA0CTL)) | RXDMA_POLL,

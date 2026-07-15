@@ -15,7 +15,7 @@ if D13X_HOME_PANEL
 
 config D13X_HOME_PANEL_PRIORITY
 	int "Home panel task priority"
-	default 100
+	default 90
 
 config D13X_HOME_PANEL_STACKSIZE
 	int "Home panel task stack size"

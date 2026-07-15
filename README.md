@@ -16,7 +16,7 @@
 | I2C2 | 已验证注册 | `/dev/i2c2` 节点存在 |
 | LVDS 显示 | 已验证 | `/dev/fb0`、1024x600 彩条、PE13 背光正常 |
 | GT911 触摸 | 已验证 | `/dev/input0` 可报告按下、移动和抬起事件 |
-| 系统定时器 | 已验证 | CORET 4 MHz 计数器轮询，`sleep`/`usleep` 正常 |
+| 系统定时器 | 待联合复验 | CORET 4 MHz 架构定时器，不依赖 idle 或网络流量推进 |
 | GMAC0 以太网 | 已验证 | RMII 100M 全双工，DHCP、网关及外网连通正常 |
 
 真机显示验证所使用镜像的 SHA-256 为：
@@ -31,7 +31,7 @@
 4dc5dcc6c6f9fffca4282d574286a0ccd89c625de6f123a54cbd1f01b549b5be
 ```
 
-系统定时器轮询真机验证镜像的 SHA-256 为：
+旧版系统定时器轮询真机验证镜像的 SHA-256 为：
 
 ```text
 3a1a6613bb8df7b0434c5d491f593781bdad1e4d33dacda33a2a7c90d94117d2
@@ -109,9 +109,9 @@ vendor/artinchip/pack/prebuilt/d13x_hengshan-pi_v1.0.0.img
 - `d13x_head.S` 使用 `jal x1, __start_c` 进入 C 代码；跳转目标和 C 函数
   序言保持真机验证版本不变。
 - NuttX 从 `0x30040000` 的 PSRAM 执行，镜像入口与链接脚本地址一致。
-- CORET IRQ 7 保持屏蔽，避免进入尚不稳定的 E907 CLIC 返回路径。idle
-  任务按 4 MHz CORET 计数器每 10 ms 推进 NuttX 系统时钟，并同时保留
-  UART0 与 GT911 轮询；真机已验证 `sleep`、`usleep` 和既有外设无回归。
+- CORET 使用 GTC 提供的 4 MHz 时基，并通过 NuttX `arch_alarm` 驱动
+  CLIC IRQ 7。系统时钟不再依赖 idle 任务，因此 DHCP、DNS、LVGL 和
+  LPWORK 同时运行时，`sleep`、`usleep` 与超时仍能持续推进。
 - GT911 使用 I2C2 和 `/dev/input0`。由于 GPIO/CLIC 中断返回路径尚未纳入
   稳定基线，PA11 由 idle 任务轮询，I2C 读取仍在调用者任务上下文执行。
 - 启动时保留面板内置 GT911 配置，避免通用配置表覆盖分辨率、坐标方向和
