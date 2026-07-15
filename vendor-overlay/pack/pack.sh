@@ -121,7 +121,15 @@ popd > /dev/null
 python3 $TOOLDIR/mk_private_resource.py -v -l $PRJ_OUT/pbp_cfg.json,$PRJ_OUT/partition.json -o $PRJ_OUT/pbp_cfg.bin
 
 # 8.  generate final .img image
-IMG_NAME="${CHIP_NAME}_${BOARD_NAME}_v1.0.0.img"
+IMG_VERSION=$(sed -n \
+    's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$PRJ_OUT/image_cfg.json" | head -n 1)
+if [ -z "$IMG_VERSION" ]; then
+    echo "Error: image version is missing from image_cfg.json" >&2
+    exit 1
+fi
+
+IMG_NAME="${CHIP_NAME}_${BOARD_NAME}_v${IMG_VERSION}.img"
 python3 $TOOLDIR/mk_image.py -v -c $PRJ_OUT/image_cfg.json -d $PRJ_OUT
 
 echo ">>> Image generated successfully at: $PRJ_OUT/$IMG_NAME"

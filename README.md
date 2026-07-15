@@ -3,10 +3,12 @@
 本仓库保存将 openvela 移植到匠芯创 D13x 衡山派开发板所需的参赛者代码。
 目标芯片为 D133EBS，CPU 为玄铁 E907。
 
+当前发布版本为 **1.2.4.3**，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 硬件验证基线
 
-当前源码以 2026-07-13 的 `step20b` 真机基线为起点，并于 2026-07-14
-完成家庭中控界面与有线以太网验证。
+当前源码以 2026-07-13 的 `step20b` 真机基线为起点，并于 2026-07-15
+完成家庭中控界面、GT911 触摸与有线互联网状态联合验证。
 
 | 功能 | 状态 | 验证结果 |
 | --- | --- | --- |
@@ -16,7 +18,7 @@
 | I2C2 | 已验证注册 | `/dev/i2c2` 节点存在 |
 | LVDS 显示 | 已验证 | `/dev/fb0`、1024x600 彩条、PE13 背光正常 |
 | GT911 触摸 | 已验证 | `/dev/input0` 可报告按下、移动和抬起事件 |
-| 系统定时器 | 待联合复验 | CORET 4 MHz 架构定时器，不依赖 idle 或网络流量推进 |
+| 系统定时器 | 已验证 | CORET 4 MHz 架构定时器，不依赖 idle 或网络流量推进 |
 | GMAC0 以太网 | 已验证 | RMII 100M 全双工，DHCP、网关及外网连通正常 |
 
 真机显示验证所使用镜像的 SHA-256 为：
@@ -76,7 +78,7 @@ cd contest2026_011_ladelamuStudio
 最终可烧录镜像位于：
 
 ```text
-vendor/artinchip/pack/prebuilt/d13x_hengshan-pi_v1.0.0.img
+vendor/artinchip/pack/prebuilt/d13x_hengshan-pi_v1.2.4.3.img
 ```
 
 16 MiB SPI NOR 的分区合计使用 15 MiB：
