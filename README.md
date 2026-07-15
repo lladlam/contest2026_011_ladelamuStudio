@@ -3,7 +3,7 @@
 本仓库保存将 openvela 移植到匠芯创 D13x 衡山派开发板所需的参赛者代码。
 目标芯片为 D133EBS，CPU 为玄铁 E907。
 
-当前发布版本为 **1.2.4.3**，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+当前发布版本为 **1.2.4.4**，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 硬件验证基线
 
@@ -78,7 +78,7 @@ cd contest2026_011_ladelamuStudio
 最终可烧录镜像位于：
 
 ```text
-vendor/artinchip/pack/prebuilt/d13x_hengshan-pi_v1.2.4.3.img
+vendor/artinchip/pack/prebuilt/d13x_hengshan-pi_v1.2.4.4.img
 ```
 
 16 MiB SPI NOR 的分区合计使用 15 MiB：
