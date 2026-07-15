@@ -112,6 +112,14 @@ static inline void d13x_clic_set_attr(int irq, uint8_t attr)
   *attrp = attr;
 }
 
+static inline void d13x_clic_set_control(int irq, uint8_t control)
+{
+  volatile uint8_t *ctl =
+    (volatile uint8_t *)(D13X_CLIC_INT_BASE + irq * 4 + 3);
+
+  *ctl = control;
+}
+
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -176,6 +184,13 @@ void up_irqinitialize(void)
 
   *cliccfg = (nlbits << 1) & 0x1E;
 
+  /* Never inherit a bootloader interrupt threshold.  In CLIC mode an
+   * enabled source is still masked when its level does not exceed this
+   * threshold.
+   */
+
+  *(volatile uint32_t *)D13X_CLIC_MINTTHRESH = 0;
+
   /* 初始化所有中断: 清除 pending, 使能向量中断 */
 
   for (i = 0; i < MAX_IRQn; i++)
@@ -212,7 +227,30 @@ void up_enable_irq(int irq)
 
   if ((unsigned int)raw_irq < MAX_IRQn)
     {
+      if (irq == RISCV_IRQ_MTIMER)
+        {
+          /* CLICCFG assigns all implemented CTL bits to interrupt level.
+           * Give CORET a nonzero, unambiguously eligible level instead of
+           * relying on the value left by tinySPL.
+           */
+
+          d13x_clic_set_control(raw_irq, UINT8_MAX);
+        }
+
       d13x_clic_enable_irq(raw_irq);
+
+      /* CORET is exposed as both CLIC source 7 and the architectural
+       * machine-timer interrupt.  The per-source CLIC enable is necessary
+       * but not sufficient: mie.MTIE must also be set before the pending
+       * compare match can enter the CPU.
+       */
+
+      if (irq == RISCV_IRQ_MTIMER)
+        {
+          uint32_t mtie = 1u << 7;
+
+          __asm__ __volatile__("csrs mie, %0" :: "r"(mtie));
+        }
     }
 }
 
@@ -230,6 +268,13 @@ void up_disable_irq(int irq)
 
   if ((unsigned int)raw_irq < MAX_IRQn)
     {
+      if (irq == RISCV_IRQ_MTIMER)
+        {
+          uint32_t mtie = 1u << 7;
+
+          __asm__ __volatile__("csrc mie, %0" :: "r"(mtie));
+        }
+
       d13x_clic_disable_irq(raw_irq);
     }
 }

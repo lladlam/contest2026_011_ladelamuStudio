@@ -489,6 +489,18 @@ static ssize_t gt9xx_read(FAR struct file *filep, FAR char *buffer,
       return ret;
     }
 
+  /* LVGL opens the touchscreen with O_NONBLOCK and keeps reading while a
+   * full sample is returned.  Do not synthesize an empty sample when no
+   * GT9xx interrupt is pending, otherwise LVGL's input loop never ends and
+   * the rest of the UI can no longer refresh.
+   */
+
+  if (!priv->int_pending)
+    {
+      nxmutex_unlock(&priv->devlock);
+      return -EAGAIN;
+    }
+
   ret = gt9xx_read_touch_data(priv, &sample);
   if (ret >= 0)
     {

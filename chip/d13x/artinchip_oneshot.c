@@ -15,6 +15,7 @@
 #include <nuttx/timers/arch_alarm.h>
 #include <nuttx/irq.h>
 #include <nuttx/arch.h>
+#include <arch/barriers.h>
 #include "chip.h"
 
 /****************************************************************************
@@ -77,7 +78,6 @@ struct d13x_oneshot_lowerhalf_s
  ****************************************************************************/
 
 static struct d13x_oneshot_lowerhalf_s g_d13x_oneshot;
-
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -116,6 +116,7 @@ static void d13x_coret_set_compare(uint64_t value)
   putreg32(UINT32_MAX, CORET_MTIMECMP_HI);
   putreg32((uint32_t)value, CORET_MTIMECMP_LO);
   putreg32((uint32_t)(value >> 32), CORET_MTIMECMP_HI);
+  UP_DSB();
   up_irq_restore(flags);
 }
 
@@ -248,12 +249,10 @@ void up_timer_initialize(void)
 
   up_alarm_set_lowerhalf(&g_d13x_oneshot.lower);
 
-  /* Keep raw CORET IRQ 7 masked.  The E907 CLIC return path currently
-   * restores a bootloader-era 0x010xxxxx stack pointer after this IRQ,
-   * corrupting the running NuttX task.  The free-running counter remains
-   * available, while serial polling and synchronous task wakeups continue
-   * to work without the unsafe interrupt.
+  /* up_alarm_set_lowerhalf() has programmed the first deadline.  Enable the
+   * level-triggered CORET source only after the compare register and callback
+   * are both valid.
    */
 
-  up_disable_irq(D13X_IRQ_GTC);
+  up_enable_irq(D13X_IRQ_GTC);
 }

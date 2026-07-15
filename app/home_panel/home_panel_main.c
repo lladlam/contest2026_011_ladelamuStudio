@@ -4,11 +4,24 @@
 
 #include <nuttx/config.h>
 
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <nuttx/net/dns.h>
+#include <nuttx/net/icmp.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include <lvgl/lvgl.h>
+#include <netutils/netlib.h>
 
 LV_FONT_DECLARE(home_panel_misans_18);
 
@@ -26,11 +39,694 @@ LV_FONT_DECLARE(home_panel_misans_18);
 #define COLOR_BLUE        0x4b8df8
 #define COLOR_GREEN       0x47c486
 
+#define NETWORK_INTERFACE       "eth0"
+#define NETWORK_PROBE_INTERVAL  15
+#define NETWORK_THREAD_STACK    8192
+#define NETWORK_PING_POLL_US    20000
+#define NETWORK_PING_POLLS      75
+#define NETWORK_PING_DATA_SIZE  16
+#define NETWORK_DNS_BUFFER_SIZE 512
+#define UI_LOOP_MAX_DELAY_MS    20
+
+enum network_state_e
+{
+  NETWORK_INITIALIZING = 0,
+  NETWORK_DISCONNECTED,
+  NETWORK_CHECKING,
+  NETWORK_NO_INTERNET,
+  NETWORK_ONLINE
+};
+
 static lv_obj_t *g_status_label;
 static lv_obj_t *g_content;
 static lv_obj_t *g_nav_buttons[4];
+static lv_obj_t *g_network_label;
+static lv_obj_t *g_settings_network_label;
+static lv_obj_t *g_settings_probe_label;
+static volatile enum network_state_e g_network_state =
+  NETWORK_INITIALIZING;
+static volatile bool g_network_refresh_requested = true;
+static uint16_t g_network_ping_id;
+static uint16_t g_network_dns_id;
 static void nav_clicked(lv_event_t *event);
 static void show_page(unsigned int page);
+
+static const char *network_state_name(enum network_state_e state)
+{
+  switch (state)
+    {
+      case NETWORK_INITIALIZING:
+        return "initializing";
+      case NETWORK_CHECKING:
+        return "checking";
+      case NETWORK_NO_INTERNET:
+        return "no-internet";
+      case NETWORK_ONLINE:
+        return "online";
+      case NETWORK_DISCONNECTED:
+        return "cable-disconnected";
+      default:
+        return "unknown";
+    }
+}
+
+static void network_set_state(enum network_state_e state)
+{
+  if (g_network_state != state)
+    {
+      g_network_state = state;
+      syslog(LOG_INFO, "[HOME][NET] state=%s\n",
+             network_state_name(state));
+    }
+}
+
+enum network_link_state_e
+{
+  NETWORK_LINK_INITIALIZING = 0,
+  NETWORK_LINK_DOWN,
+  NETWORK_LINK_UP
+};
+
+static enum network_link_state_e network_get_link_state(uint8_t *ifflags)
+{
+  uint8_t flags = 0;
+
+  if (netlib_getifstatus(NETWORK_INTERFACE, &flags) < 0)
+    {
+      *ifflags = 0;
+      return NETWORK_LINK_INITIALIZING;
+    }
+
+  *ifflags = flags;
+  if ((flags & IFF_RUNNING) != 0)
+    {
+      return NETWORK_LINK_UP;
+    }
+
+  return (flags & IFF_UP) != 0 ? NETWORK_LINK_DOWN :
+                                 NETWORK_LINK_INITIALIZING;
+}
+
+static bool network_has_carrier(void)
+{
+  uint8_t flags;
+
+  return network_get_link_state(&flags) == NETWORK_LINK_UP;
+}
+
+static bool network_get_ipv4_address(struct in_addr *address)
+{
+  return netlib_get_ipv4addr(NETWORK_INTERFACE, address) >= 0 &&
+         address->s_addr != INADDR_ANY;
+}
+
+struct network_ping_packet_s
+{
+  struct icmp_hdr_s header;
+  uint8_t data[NETWORK_PING_DATA_SIZE];
+};
+
+static uint16_t network_ping_checksum(const void *buffer, size_t length)
+{
+  const uint16_t *word = buffer;
+  uint32_t sum = 0;
+
+  while (length > 1)
+    {
+      sum += *word++;
+      length -= 2;
+    }
+
+  if (length != 0)
+    {
+      sum += *(const uint8_t *)word;
+    }
+
+  while ((sum >> 16) != 0)
+    {
+      sum = (sum & 0xffff) + (sum >> 16);
+    }
+
+  return (uint16_t)~sum;
+}
+
+struct network_dns_context_s
+{
+  struct sockaddr_in server;
+  bool found;
+};
+
+static int network_dns_server_callback(void *arg, struct sockaddr *address,
+                                       socklen_t address_length)
+{
+  struct network_dns_context_s *context = arg;
+
+  (void)address_length;
+  if (address->sa_family == AF_INET)
+    {
+      memcpy(&context->server, address, sizeof(context->server));
+      context->found = true;
+      return 1;
+    }
+
+  return 0;
+}
+
+static bool network_get_dns_server(struct sockaddr_in *server)
+{
+  struct network_dns_context_s context;
+
+  memset(&context, 0, sizeof(context));
+  dns_foreach_nameserver(network_dns_server_callback, &context);
+  if (context.found)
+    {
+      *server = context.server;
+    }
+  else
+    {
+      memset(server, 0, sizeof(*server));
+      server->sin_family = AF_INET;
+      if (netlib_get_dripv4addr(NETWORK_INTERFACE,
+                                &server->sin_addr) < 0 ||
+          server->sin_addr.s_addr == INADDR_ANY)
+        {
+          return false;
+        }
+    }
+
+  if (server->sin_port == 0)
+    {
+      server->sin_port = htons(DNS_DEFAULT_PORT);
+    }
+
+  return true;
+}
+
+static uint16_t network_dns_read_u16(const uint8_t *data)
+{
+  uint16_t value;
+
+  memcpy(&value, data, sizeof(value));
+  return ntohs(value);
+}
+
+static void network_dns_write_u16(uint8_t *data, uint16_t value)
+{
+  value = htons(value);
+  memcpy(data, &value, sizeof(value));
+}
+
+static bool network_dns_skip_name(const uint8_t *message, size_t length,
+                                  size_t *offset)
+{
+  while (*offset < length)
+    {
+      uint8_t label_length = message[(*offset)++];
+
+      if (label_length == 0)
+        {
+          return true;
+        }
+
+      if ((label_length & 0xc0) == 0xc0)
+        {
+          if (*offset >= length)
+            {
+              return false;
+            }
+
+          (*offset)++;
+          return true;
+        }
+
+      if (label_length > 63 || *offset + label_length > length)
+        {
+          return false;
+        }
+
+      *offset += label_length;
+    }
+
+  return false;
+}
+
+static bool network_resolve_host(const char *hostname,
+                                 struct in_addr *resolved_address)
+{
+  struct sockaddr_in dns_server;
+  uint8_t query[NETWORK_DNS_BUFFER_SIZE];
+  uint8_t response[NETWORK_DNS_BUFFER_SIZE];
+  struct dns_header_s *header = (struct dns_header_s *)query;
+  const char *label = hostname;
+  uint16_t query_id = ++g_network_dns_id;
+  size_t query_length = sizeof(struct dns_header_s);
+  unsigned int poll_count;
+  char server_text[INET_ADDRSTRLEN];
+  int sockfd;
+  int ret;
+
+  if (!network_get_dns_server(&dns_server))
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s dns-server=missing\n",
+             hostname);
+      return false;
+    }
+
+  memset(query, 0, sizeof(query));
+  header->id = htons(query_id);
+  header->flags1 = DNS_FLAG1_RD;
+  header->numquestions = htons(1);
+
+  while (*label != '\0')
+    {
+      const char *dot = strchr(label, '.');
+      size_t label_length = dot == NULL ? strlen(label) :
+                                          (size_t)(dot - label);
+
+      if (label_length == 0 || label_length > 63 ||
+          query_length + label_length + 6 > sizeof(query))
+        {
+          return false;
+        }
+
+      query[query_length++] = (uint8_t)label_length;
+      memcpy(&query[query_length], label, label_length);
+      query_length += label_length;
+      if (dot == NULL)
+        {
+          break;
+        }
+
+      label = dot + 1;
+    }
+
+  query[query_length++] = 0;
+  network_dns_write_u16(&query[query_length], DNS_RECTYPE_A);
+  query_length += 2;
+  network_dns_write_u16(&query[query_length], DNS_CLASS_IN);
+  query_length += 2;
+
+  inet_ntop(AF_INET, &dns_server.sin_addr, server_text,
+            sizeof(server_text));
+  syslog(LOG_INFO, "[HOME][NET] host=%s dns=%s\n",
+         hostname, server_text);
+
+  sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (sockfd < 0)
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s dns-socket=%d\n",
+             hostname, errno);
+      return false;
+    }
+
+  if (fcntl(sockfd, F_SETFL, O_NONBLOCK) < 0)
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s dns-nonblock=%d\n",
+             hostname, errno);
+      close(sockfd);
+      return false;
+    }
+
+  ret = sendto(sockfd, query, query_length, MSG_DONTWAIT,
+               (const struct sockaddr *)&dns_server,
+               sizeof(dns_server));
+  if (ret != (int)query_length)
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s dns-send=%d errno=%d\n",
+             hostname, ret, errno);
+      close(sockfd);
+      return false;
+    }
+
+  syslog(LOG_INFO, "[HOME][NET] host=%s dns-sent=%d\n", hostname, ret);
+
+  for (poll_count = 0; poll_count < NETWORK_PING_POLLS; poll_count++)
+    {
+      ssize_t received;
+
+      received = recvfrom(sockfd, response, sizeof(response),
+                          MSG_DONTWAIT, NULL, NULL);
+      if (received >= (ssize_t)sizeof(struct dns_header_s))
+        {
+          struct dns_header_s *response_header =
+            (struct dns_header_s *)response;
+          size_t offset = sizeof(struct dns_header_s);
+          unsigned int index;
+
+          if (ntohs(response_header->id) != query_id ||
+              (response_header->flags1 & DNS_FLAG1_RESPONSE) == 0 ||
+              (response_header->flags2 & DNS_FLAG2_ERR_MASK) != 0)
+            {
+              continue;
+            }
+
+          for (index = 0;
+               index < ntohs(response_header->numquestions); index++)
+            {
+              if (!network_dns_skip_name(response, received, &offset) ||
+                  offset + 4 > (size_t)received)
+                {
+                  break;
+                }
+
+              offset += 4;
+            }
+
+          for (index = 0; index < ntohs(response_header->numanswers);
+               index++)
+            {
+              uint16_t record_type;
+              uint16_t record_class;
+              uint16_t record_length;
+
+              if (!network_dns_skip_name(response, received, &offset) ||
+                  offset + 10 > (size_t)received)
+                {
+                  break;
+                }
+
+              record_type = network_dns_read_u16(&response[offset]);
+              record_class = network_dns_read_u16(&response[offset + 2]);
+              record_length = network_dns_read_u16(&response[offset + 8]);
+              offset += 10;
+              if (offset + record_length > (size_t)received)
+                {
+                  break;
+                }
+
+              if (record_type == DNS_RECTYPE_A &&
+                  record_class == DNS_CLASS_IN && record_length == 4)
+                {
+                  memcpy(resolved_address, &response[offset], 4);
+                  close(sockfd);
+                  return true;
+                }
+
+              offset += record_length;
+            }
+        }
+      else if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+               errno != EINTR)
+        {
+          syslog(LOG_WARNING,
+                 "[HOME][NET] host=%s dns-recv=%d\n", hostname, errno);
+          break;
+        }
+
+      if (poll_count == NETWORK_PING_POLLS / 3 ||
+          poll_count == (NETWORK_PING_POLLS * 2) / 3)
+        {
+          syslog(LOG_INFO, "[HOME][NET] host=%s dns-wait=%u/%u\n",
+                 hostname, poll_count, NETWORK_PING_POLLS);
+        }
+
+      usleep(NETWORK_PING_POLL_US);
+    }
+
+  syslog(LOG_WARNING, "[HOME][NET] host=%s dns-timeout\n", hostname);
+  close(sockfd);
+  return false;
+}
+
+static int network_ping_host(const char *hostname)
+{
+  struct network_ping_packet_s packet;
+  struct sockaddr_in destination;
+  uint8_t receive_buffer[64];
+  uint16_t ping_id;
+  unsigned int poll_count;
+  char address_text[INET_ADDRSTRLEN];
+  int sockfd;
+  int ret;
+
+  memset(&destination, 0, sizeof(destination));
+  destination.sin_family = AF_INET;
+  if (!network_resolve_host(hostname, &destination.sin_addr))
+    {
+      return 0;
+    }
+
+  inet_ntop(AF_INET, &destination.sin_addr, address_text,
+            sizeof(address_text));
+  syslog(LOG_INFO, "[HOME][NET] host=%s address=%s\n",
+         hostname, address_text);
+
+  sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+  if (sockfd < 0)
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s socket=%d\n",
+             hostname, errno);
+      return 0;
+    }
+
+  if (fcntl(sockfd, F_SETFL, O_NONBLOCK) < 0)
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s nonblock=%d\n",
+             hostname, errno);
+      close(sockfd);
+      return 0;
+    }
+
+  memset(&packet, 0, sizeof(packet));
+  ping_id = ++g_network_ping_id;
+  packet.header.type = ICMP_ECHO_REQUEST;
+  packet.header.id = htons(ping_id);
+  packet.header.seqno = htons(1);
+  memset(packet.data, 0x5a, sizeof(packet.data));
+  packet.header.icmpchksum = network_ping_checksum(&packet,
+                                                   sizeof(packet));
+
+  ret = sendto(sockfd, &packet, sizeof(packet), MSG_DONTWAIT,
+               (const struct sockaddr *)&destination,
+               sizeof(destination));
+  if (ret != (int)sizeof(packet))
+    {
+      syslog(LOG_WARNING, "[HOME][NET] host=%s send=%d errno=%d\n",
+             hostname, ret, errno);
+      close(sockfd);
+      return 0;
+    }
+
+  for (poll_count = 0; poll_count < NETWORK_PING_POLLS; poll_count++)
+    {
+      ssize_t received;
+      size_t offset = 0;
+      struct icmp_hdr_s *reply;
+
+      received = recvfrom(sockfd, receive_buffer, sizeof(receive_buffer),
+                          MSG_DONTWAIT, NULL, NULL);
+      if (received > 0)
+        {
+          if ((receive_buffer[0] >> 4) == 4)
+            {
+              offset = (receive_buffer[0] & 0x0f) * 4;
+            }
+
+          if ((size_t)received >= offset + sizeof(struct icmp_hdr_s))
+            {
+              reply = (struct icmp_hdr_s *)(receive_buffer + offset);
+              if (reply->type == ICMP_ECHO_REPLY &&
+                  ntohs(reply->id) == ping_id &&
+                  ntohs(reply->seqno) == 1)
+                {
+                  close(sockfd);
+                  return 1;
+                }
+            }
+        }
+      else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        {
+          syslog(LOG_WARNING, "[HOME][NET] host=%s recv=%d\n",
+                 hostname, errno);
+          break;
+        }
+
+      usleep(NETWORK_PING_POLL_US);
+    }
+
+  close(sockfd);
+  return 0;
+}
+
+static void *network_worker(void *arg)
+{
+  unsigned int elapsed = NETWORK_PROBE_INTERVAL;
+  bool was_connected = false;
+  enum network_link_state_e last_link = NETWORK_LINK_INITIALIZING;
+  uint8_t last_flags = UINT8_MAX;
+
+  (void)arg;
+
+  for (;;)
+    {
+      uint8_t flags;
+      enum network_link_state_e link = network_get_link_state(&flags);
+      bool connected = link == NETWORK_LINK_UP;
+      bool refresh = g_network_refresh_requested;
+      struct in_addr address;
+
+      if (link != last_link || flags != last_flags)
+        {
+          const char *link_name = link == NETWORK_LINK_UP ? "up" :
+                                  link == NETWORK_LINK_DOWN ? "down" :
+                                  "initializing";
+
+          syslog(LOG_INFO, "[HOME][NET] carrier=%s flags=%02x\n",
+                 link_name, flags);
+          last_link = link;
+          last_flags = flags;
+        }
+
+      g_network_refresh_requested = false;
+      if (link == NETWORK_LINK_INITIALIZING)
+        {
+          network_set_state(NETWORK_INITIALIZING);
+          was_connected = false;
+          elapsed = NETWORK_PROBE_INTERVAL;
+        }
+      else if (!connected)
+        {
+          network_set_state(NETWORK_DISCONNECTED);
+          was_connected = false;
+          elapsed = NETWORK_PROBE_INTERVAL;
+        }
+      else if (!network_get_ipv4_address(&address))
+        {
+          /* DHCP runs independently. Keep checking without reporting a
+           * false Internet failure while an address is being acquired.
+           */
+
+          network_set_state(NETWORK_CHECKING);
+          was_connected = false;
+        }
+      else if (!was_connected || refresh ||
+               elapsed >= NETWORK_PROBE_INTERVAL)
+        {
+          int replies;
+          char address_text[INET_ADDRSTRLEN];
+
+          /* Keep the last definitive result visible during an automatic
+           * background probe.  Only initial and user-requested probes show
+           * the transient checking state.
+           */
+
+          if (!was_connected || refresh)
+            {
+              network_set_state(NETWORK_CHECKING);
+            }
+          inet_ntop(AF_INET, &address, address_text, sizeof(address_text));
+          syslog(LOG_INFO, "[HOME][NET] ipv4=%s probe=mi.com\n",
+                 address_text);
+          replies = network_ping_host("mi.com");
+          syslog(LOG_INFO, "[HOME][NET] host=mi.com replies=%d\n", replies);
+          if (replies <= 0 && network_has_carrier())
+            {
+              replies = network_ping_host("xiaomi.cn");
+              syslog(LOG_INFO,
+                     "[HOME][NET] host=xiaomi.cn replies=%d\n", replies);
+            }
+
+          if (!network_has_carrier())
+            {
+              network_set_state(NETWORK_DISCONNECTED);
+            }
+          else
+            {
+              network_set_state(replies > 0 ? NETWORK_ONLINE :
+                                              NETWORK_NO_INTERNET);
+            }
+
+          was_connected = true;
+          elapsed = 0;
+        }
+      else
+        {
+          elapsed++;
+        }
+
+      sleep(1);
+    }
+
+  return NULL;
+}
+
+static int start_network_monitor(void)
+{
+  pthread_attr_t attr;
+  pthread_t thread;
+  int ret;
+
+  ret = pthread_attr_init(&attr);
+  if (ret != 0)
+    {
+      return ret;
+    }
+
+  pthread_attr_setstacksize(&attr, NETWORK_THREAD_STACK);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  ret = pthread_create(&thread, &attr, network_worker, NULL);
+  pthread_attr_destroy(&attr);
+  return ret;
+}
+
+static void apply_network_state(enum network_state_e state)
+{
+  const char *top_text;
+  const char *settings_text;
+  const char *probe_text;
+  lv_color_t color;
+
+  if (state == NETWORK_ONLINE)
+    {
+      top_text = LV_SYMBOL_OK "  已连接互联网";
+      settings_text = "已连接互联网";
+      probe_text = "mi.com / xiaomi.cn 可达";
+      color = lv_color_hex(COLOR_GREEN);
+    }
+  else if (state == NETWORK_NO_INTERNET)
+    {
+      top_text = LV_SYMBOL_WARNING "  无互联网连接";
+      settings_text = "无互联网连接";
+      probe_text = "mi.com / xiaomi.cn 不可达";
+      color = lv_color_hex(COLOR_ORANGE);
+    }
+  else if (state == NETWORK_CHECKING)
+    {
+      top_text = LV_SYMBOL_REFRESH "  正在检测网络";
+      settings_text = "网线已连接";
+      probe_text = "正在检测互联网";
+      color = lv_color_hex(COLOR_BLUE);
+    }
+  else if (state == NETWORK_INITIALIZING)
+    {
+      top_text = LV_SYMBOL_REFRESH "  正在初始化网络";
+      settings_text = "正在初始化有线网络";
+      probe_text = "等待网络接口启动";
+      color = lv_color_hex(COLOR_BLUE);
+    }
+  else
+    {
+      top_text = LV_SYMBOL_WARNING "  有线网络未连接";
+      settings_text = "有线网络未连接";
+      probe_text = "等待网线连接";
+      color = lv_color_hex(COLOR_ORANGE);
+    }
+
+  lv_label_set_text(g_network_label, top_text);
+  lv_obj_set_style_text_color(g_network_label, color, 0);
+
+  if (g_settings_network_label != NULL)
+    {
+      lv_label_set_text(g_settings_network_label, settings_text);
+      lv_obj_set_style_text_color(g_settings_network_label, color, 0);
+    }
+
+  if (g_settings_probe_label != NULL)
+    {
+      lv_label_set_text(g_settings_probe_label, probe_text);
+      lv_obj_set_style_text_color(g_settings_probe_label, color, 0);
+    }
+}
 
 static void set_chinese_font(lv_obj_t *obj)
 {
@@ -102,6 +798,7 @@ static void show_login(lv_event_t *event)
   lv_obj_t *dialog;
   lv_obj_t *close;
   lv_obj_t *label;
+  const char *message;
 
   (void)event;
 
@@ -125,9 +822,23 @@ static void show_login(lv_event_t *event)
                      lv_color_hex(COLOR_TEXT), &home_panel_misans_18);
   lv_obj_set_style_text_font(label, &home_panel_misans_18, 0);
 
-  label = make_label(dialog,
-                     "请先连接有线网络。联网后将在此显示\n"
-                     "米家授权二维码，账号凭据仅保存在服务器。",
+  if (g_network_state == NETWORK_ONLINE)
+    {
+      message = "互联网已连接。米家授权服务接入后将在此\n"
+                "显示登录二维码，账号凭据仅保存在服务器。";
+    }
+  else if (g_network_state == NETWORK_NO_INTERNET)
+    {
+      message = "网线已连接，但当前无法访问互联网。请检查\n"
+                "路由器和上级网络后重新检测。";
+    }
+  else
+    {
+      message = "请先连接有线网络。联网后将在此显示\n"
+                "米家授权二维码，账号凭据仅保存在服务器。";
+    }
+
+  label = make_label(dialog, message,
                      0, 62, lv_color_hex(COLOR_MUTED),
                      &home_panel_misans_18);
   lv_obj_set_style_text_line_space(label, 12, 0);
@@ -284,12 +995,26 @@ static lv_obj_t *make_action_button(lv_obj_t *parent, const char *text,
   return button;
 }
 
-static void make_info_row(lv_obj_t *parent, const char *name,
-                          const char *value, int y, lv_color_t color)
+static lv_obj_t *make_info_row(lv_obj_t *parent, const char *name,
+                               const char *value, int y, lv_color_t color)
 {
   make_label(parent, name, 32, y, lv_color_hex(COLOR_MUTED),
              &home_panel_misans_18);
-  make_label(parent, value, 238, y, color, &home_panel_misans_18);
+  return make_label(parent, value, 238, y, color,
+                    &home_panel_misans_18);
+}
+
+static void network_refresh_clicked(lv_event_t *event)
+{
+  (void)event;
+
+  g_network_refresh_requested = true;
+  if (g_status_label != NULL)
+    {
+      lv_label_set_text(g_status_label, "已请求重新检测网络");
+      lv_obj_set_style_text_color(g_status_label,
+                                  lv_color_hex(COLOR_BLUE), 0);
+    }
 }
 
 static void create_home_page(void)
@@ -379,21 +1104,28 @@ static void create_settings_page(void)
 
   panel = lv_obj_create(g_content);
   lv_obj_set_pos(panel, 30, 104);
-  lv_obj_set_size(panel, 790, 244);
+  lv_obj_set_size(panel, 790, 270);
   lv_obj_set_style_radius(panel, 8, 0);
   lv_obj_set_style_bg_color(panel, lv_color_hex(COLOR_SURFACE), 0);
   lv_obj_set_style_border_color(panel, lv_color_hex(0x2c323a), 0);
   lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
-  make_info_row(panel, "有线网络", "正在等待网线连接", 28,
-                lv_color_hex(COLOR_ORANGE));
-  make_info_row(panel, "地址获取", "DHCP 自动", 88,
+  g_settings_network_label = make_info_row(panel, "有线网络",
+                                            "有线网络未连接", 24,
+                                            lv_color_hex(COLOR_ORANGE));
+  g_settings_probe_label = make_info_row(panel, "互联网检测",
+                                          "等待网线连接", 82,
+                                          lv_color_hex(COLOR_ORANGE));
+  make_info_row(panel, "地址获取", "DHCP 自动", 140,
                 lv_color_hex(COLOR_TEXT));
-  make_info_row(panel, "米家账号", "未登录", 148,
+  make_info_row(panel, "米家账号", "未登录", 198,
                 lv_color_hex(COLOR_MUTED));
-  g_status_label = make_label(g_content, "网络驱动状态会输出到串口",
-                              30, 390, lv_color_hex(COLOR_MUTED),
+  g_status_label = make_label(g_content, "系统每 15 秒自动检测网络",
+                              30, 416, lv_color_hex(COLOR_MUTED),
                               &home_panel_misans_18);
-  make_action_button(g_content, "重新检测网络", 628, 382, 192);
+  panel = make_action_button(g_content, "重新检测网络", 628, 408, 192);
+  lv_obj_remove_event_cb(panel, action_clicked);
+  lv_obj_add_event_cb(panel, network_refresh_clicked, LV_EVENT_CLICKED, NULL);
+  apply_network_state(g_network_state);
 }
 
 static void show_page(unsigned int page)
@@ -413,6 +1145,8 @@ static void show_page(unsigned int page)
     }
 
   g_status_label = NULL;
+  g_settings_network_label = NULL;
+  g_settings_probe_label = NULL;
   lv_obj_clean(g_content);
   if (page == 0)
     {
@@ -457,8 +1191,10 @@ static void create_home_screen(void)
              &lv_font_montserrat_28);
   make_label(topbar, "7月14日  星期二", 132, 26,
              lv_color_hex(COLOR_MUTED), &home_panel_misans_18);
-  make_label(topbar, LV_SYMBOL_WARNING "  有线网络未连接", 672, 26,
-             lv_color_hex(COLOR_ORANGE), &home_panel_misans_18);
+  g_network_label = make_label(topbar,
+                               LV_SYMBOL_WARNING "  有线网络未连接",
+                               650, 26, lv_color_hex(COLOR_ORANGE),
+                               &home_panel_misans_18);
 
   login = lv_button_create(topbar);
   lv_obj_set_size(login, 118, 44);
@@ -501,6 +1237,8 @@ int main(int argc, char *argv[])
 {
   lv_nuttx_dsc_t info;
   lv_nuttx_result_t result;
+  enum network_state_e displayed_state = (enum network_state_e)-1;
+  int ret;
 
   (void)argc;
   (void)argv;
@@ -536,12 +1274,33 @@ int main(int argc, char *argv[])
   lv_indev_set_display(result.indev, result.disp);
 
   create_home_screen();
+  ret = start_network_monitor();
+  if (ret != 0)
+    {
+      fprintf(stderr, "home_panel: network monitor failed: %d\n", ret);
+    }
+
   lv_obj_invalidate(lv_screen_active());
   lv_refr_now(result.disp);
 
   for (;;)
     {
-      uint32_t delay = lv_timer_handler();
+      uint32_t delay;
+
+      if (displayed_state != g_network_state)
+        {
+          displayed_state = g_network_state;
+          apply_network_state(displayed_state);
+          lv_refr_now(result.disp);
+          syslog(LOG_INFO, "[HOME][UI] network=%s\n",
+                 network_state_name(displayed_state));
+        }
+
+      delay = lv_timer_handler();
+      if (delay == LV_NO_TIMER_READY || delay > UI_LOOP_MAX_DELAY_MS)
+        {
+          delay = UI_LOOP_MAX_DELAY_MS;
+        }
 
       usleep((delay > 0 ? delay : 1) * 1000);
     }
