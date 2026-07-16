@@ -16,8 +16,10 @@
 
 #include <debug.h>
 #include <nuttx/arch.h>
+#include <nuttx/clock.h>
 #include <nuttx/i2c/i2c_master.h>
 #include <nuttx/input/gt9xx.h>
+#include <nuttx/wqueue.h>
 
 #include "chip.h"
 #include "include/artinchip_i2c.h"
@@ -31,6 +33,7 @@
 #define GT911_ADDR_PRIMARY         0x5d
 #define GT911_ADDR_FALLBACK        0x14
 #define GT911_I2C_FREQUENCY        400000
+#define GT911_POLL_INTERVAL_MS      10
 
 #define GT911_GPIO_GROUP           0
 #define GT911_I2C_SCL_PIN          8
@@ -78,6 +81,8 @@ static xcpt_t g_gt911_isr;
 static void *g_gt911_isr_arg;
 static volatile bool g_gt911_poll_enabled;
 static bool g_gt911_int_high = true;
+static bool g_gt911_poll_started;
+static struct work_s g_gt911_poll_work;
 
 static void d13x_gpio_config(uint8_t pin, uint8_t function,
                              uint8_t direction, uint8_t pull)
@@ -220,6 +225,22 @@ void d13x_touch_poll(void)
   g_gt911_int_high = high;
 }
 
+static void gt911_poll_worker(void *arg)
+{
+  int ret;
+
+  (void)arg;
+  d13x_touch_poll();
+
+  ret = work_queue_next(LPWORK, &g_gt911_poll_work, gt911_poll_worker,
+                        NULL, MSEC2TICK(GT911_POLL_INTERVAL_MS));
+  if (ret < 0)
+    {
+      g_gt911_poll_started = false;
+      syslog(LOG_ERR, "[D13TOUCH] poll reschedule failed: %d\n", ret);
+    }
+}
+
 static int gt911_set_power(const struct gt9xx_board_s *state, bool on)
 {
   /* The panel is board-powered.  Resetting it here would change the I2C
@@ -247,7 +268,9 @@ int d13x_touch_gt911_initialize(void)
   d13x_touch_pinmux();
 
   /* GPIO/CLIC task return is not stable yet.  Keep the hardware GPIO IRQ
-   * masked and detect the GT911 falling edge from the idle task instead.
+   * masked and detect the GT911 falling edge from a dedicated low-priority
+   * thread.  Polling from up_idle() loses edges whenever networking or LVGL
+   * keeps the CPU runnable for an extended period.
    */
 
   putreg32(getreg32(D13X_GPIO_IRQ_ENABLE(GT911_GPIO_GROUP)) &
@@ -283,6 +306,21 @@ int d13x_touch_gt911_initialize(void)
     {
       syslog(LOG_INFO, "[D13TOUCH] ready addr=0x%02x dev=/dev/input0\n",
              addr);
+
+      if (!g_gt911_poll_started)
+        {
+          ret = work_queue(LPWORK, &g_gt911_poll_work,
+                           gt911_poll_worker, NULL, 0);
+          if (ret < 0)
+            {
+              ierr("GT9xx poll work failed: %d\n", ret);
+              return ret;
+            }
+
+          g_gt911_poll_started = true;
+          syslog(LOG_INFO, "[D13TOUCH] poll work period=%dms\n",
+                 GT911_POLL_INTERVAL_MS);
+        }
     }
 
   return ret;

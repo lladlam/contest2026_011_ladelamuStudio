@@ -8,6 +8,8 @@
 #ifndef __VENDOR_ARTINCHIP_BOARDS_D13X_HENGSHAN_PI_INCLUDE_BOARD_H
 #define __VENDOR_ARTINCHIP_BOARDS_D13X_HENGSHAN_PI_INCLUDE_BOARD_H
 
+#include <stddef.h>
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -23,5 +25,12 @@
 
 #define BOARD_NAME                "D13x Hengshan Pi"
 #define BOARD_VERSION             "1.0"
+
+/****************************************************************************
+ * Public Function Prototypes
+ ****************************************************************************/
+
+int board_persist_read(void *buffer, size_t capacity, size_t *length);
+int board_persist_write(const void *buffer, size_t length);
 
 #endif /* __VENDOR_ARTINCHIP_BOARDS_D13X_HENGSHAN_PI_INCLUDE_BOARD_H */

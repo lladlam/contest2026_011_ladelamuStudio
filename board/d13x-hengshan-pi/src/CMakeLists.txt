@@ -3,6 +3,7 @@
 list(APPEND SRCS
   artinchip_boot.c
   artinchip_bringup.c
+  artinchip_persist.c
 )
 
 if(CONFIG_D13X_TOUCH_GT911)
