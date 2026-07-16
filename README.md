@@ -1,6 +1,6 @@
 # OpenVela D13x 衡山派家庭中控屏
 
-当前发布版本：**1.3.4.5**。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+当前发布版本：**1.7.7.5**。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 一、作品简介
 

@@ -94,6 +94,9 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev-ai-contest-2026'
     needs: build
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
 
