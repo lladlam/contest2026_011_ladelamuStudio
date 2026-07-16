@@ -7,7 +7,7 @@
 
 include $(TOPDIR)/Make.defs
 
-CSRCS = artinchip_boot.c artinchip_bringup.c
+CSRCS = artinchip_boot.c artinchip_bringup.c artinchip_persist.c
 
 ifeq ($(CONFIG_D13X_TOUCH_GT911),y)
   CSRCS += artinchip_touch.c

@@ -145,7 +145,13 @@ jobs:
             tag_sha="$existing_tag_sha"
           fi
           if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
-            echo "标签 ${RELEASE_TAG} 已指向 ${tag_sha}，不能改写为 ${GITHUB_SHA}" >&2
+            if gh release view "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::notice::版本 ${RELEASE_VERSION} 已由 ${tag_sha} 发布；当前提交不重复生成固件 Release"
+              exit 0
+            fi
+
+            echo "标签 ${RELEASE_TAG} 已指向 ${tag_sha}，但对应 Release 不存在" >&2
             exit 1
           fi
 

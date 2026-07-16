@@ -35,12 +35,17 @@ config D13X_HOME_PANEL_MIJIA_SERVER_URL
 
 config D13X_HOME_PANEL_MIJIA_TIMEOUT
 	int "Mijia API inactivity timeout in seconds"
-	default 10
+	default 15
 	range 3 60
 
 config D13X_HOME_PANEL_MIJIA_MAX_RESPONSE
 	int "Maximum Mijia API response size"
-	default 32768
-	range 4096 131072
+	default 131072
+	range 32768 262144
+
+config D13X_HOME_PANEL_MIJIA_SYNC_INTERVAL
+	int "Mijia family synchronization interval in seconds"
+	default 10
+	range 3 300
 
 endif

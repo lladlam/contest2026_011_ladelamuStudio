@@ -12,7 +12,8 @@
 家庭屏开机自动运行，可显示家庭、房间、场景和设置界面，并通过有线网络区分
 “有线网络未连接”“无互联网连接”和“已连接互联网”状态。应用通过局域网内的
 独立 `mijia-api` 服务完成米家 App 扫码登录，并同步家庭名称、设备总数与在线数；
-账号认证数据不存放在开发板。
+小米账号 Cookie 不存放在开发板，板端只持久保存自动恢复所需的服务令牌和保险箱
+解锁口令。
 
 作品亮点：
 
@@ -126,6 +127,9 @@ nsh> ping 192.168.1.1
 | rodata | 4 MiB |
 | data | 7 MiB |
 
+米家登录凭据使用冗余记录保存在 `userid` 分区末尾。该分区不包含在升级镜像的
+`target` 列表内，因此正常重新烧录系统、资源和数据分区不会清除登录状态。
+
 ## 五、AI Coding 使用说明
 
 本作品使用 AI 辅助完成了以下开发环节：
@@ -155,6 +159,7 @@ GitHub Actions 和开发板实机输出作为最终验收依据。完整对话�
 | [cJSON](https://github.com/DaveGamble/cJSON) | 解析米家登录、家庭与设备 API 响应 | 1.7.12 | MIT；通过 OpenVela `NETUTILS_CJSON` 集成 |
 | [lv_font_conv](https://github.com/lvgl/lv_font_conv) | 将 MiSans 裁剪为 LVGL C 字库 | 仅生成阶段 | MIT；不作为固件运行时依赖 |
 | [mijia-api](https://github.com/Do1e/mijia-api) | 米家 App 扫码登录、家庭、设备、属性和场景的服务端接口参考 | GPL-3.0-or-later | 仅运行在服务器侧，不复制或链接进 D13x 固件 |
+| [Xiaomi Home Integration](https://github.com/XiaoMi/ha_xiaomi_home) | 核对小米官方 HTTP 控制、MQTT 状态订阅与 MIoT-Spec 消息架构 | 官方主分支 | Apache-2.0；仅作协议与架构参考，不复制进固件 |
 | [ArtInChip Luban-Lite](https://gitee.com/artinchip/luban-lite) | D13x 启动、时钟、显示和外设寄存器参考 | 参考代码 | 不作为独立运行时库；使用时遵循其上游许可声明 |
 
 服务端使用 [lladlam/mijia](https://github.com/lladlam/mijia) 维护的独立
