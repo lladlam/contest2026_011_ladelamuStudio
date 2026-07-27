@@ -83,6 +83,7 @@ config D13X_GMAC
 config D13X_DISPLAY
     bool "LVDS display support"
     select DRIVERS_VIDEO
+    select FB_UPDATE
     select VIDEO_FB
 
 endif # ARCH_CHIP_CUSTOM

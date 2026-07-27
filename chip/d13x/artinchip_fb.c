@@ -25,12 +25,18 @@
 #define D13X_FB_FRAME_SIZE     (D13X_FB_STRIDE * D13X_FB_HEIGHT)
 #define D13X_FB_BUFFERS        2u
 #define D13X_FB_TOTAL_SIZE     (D13X_FB_FRAME_SIZE * D13X_FB_BUFFERS)
+#define D13X_CACHE_LINE_SIZE   32u
+#define D13X_CACHE_RANGE_LIMIT (64u * 1024u)
 #define THEAD_MHCR_DCACHE_EN   (1u << 1)
 
 struct d13x_fb_state_s
 {
   bool initialized;
   bool power_on;
+#ifdef CONFIG_FB_UPDATE
+  bool area_clean;
+  uint16_t clean_yoffset;
+#endif
   uint8_t *memory;
   struct wdog_s pan_wdog;
 };
@@ -55,6 +61,61 @@ static void d13x_fb_clean_cache(void)
       __asm__ __volatile__(".long 0x0010000b" ::: "memory");
       __asm__ __volatile__("fence rw, rw" ::: "memory");
     }
+}
+
+static void d13x_fb_clean_cache_area(const void *address, size_t row_bytes,
+                                     size_t stride, size_t row_count)
+{
+  uintptr_t row;
+  uint32_t mhcr;
+  size_t index;
+
+  if (row_bytes == 0 || row_count == 0)
+    {
+      return;
+    }
+
+  /* A cache-wide clean is bounded by the cache capacity and is faster than
+   * issuing tens of thousands of per-line operations for a large redraw.
+   */
+
+  if (row_bytes * row_count >= D13X_CACHE_RANGE_LIMIT)
+    {
+      d13x_fb_clean_cache();
+      return;
+    }
+
+  __asm__ __volatile__("csrr %0, 0x7c1" : "=r"(mhcr));
+  if ((mhcr & THEAD_MHCR_DCACHE_EN) == 0)
+    {
+      return;
+    }
+
+  __asm__ __volatile__("fence" ::: "memory");
+  row = (uintptr_t)address;
+  for (index = 0; index < row_count; index++)
+    {
+      uintptr_t current = row & ~(D13X_CACHE_LINE_SIZE - 1u);
+      uintptr_t end = (row + row_bytes + D13X_CACHE_LINE_SIZE - 1u) &
+                      ~(D13X_CACHE_LINE_SIZE - 1u);
+
+      while (current < end)
+        {
+          register uintptr_t cache_address __asm__("a0") = current;
+
+          /* T-Head dcache.cpa cleans one physical cache line. */
+
+          __asm__ __volatile__(".long 0x0295000b" : "+r"(cache_address) ::
+                               "memory");
+          current += D13X_CACHE_LINE_SIZE;
+        }
+
+      row += stride;
+    }
+
+  __asm__ __volatile__("fence\n\t"
+                       "fence.i\n\t"
+                       ".long 0x01a0000b" ::: "memory");
 }
 
 static int d13x_fb_getvideoinfo(struct fb_vtable_s *vtable,
@@ -96,6 +157,52 @@ static int d13x_fb_getplaneinfo(struct fb_vtable_s *vtable, int planeno,
   return OK;
 }
 
+#ifdef CONFIG_FB_UPDATE
+static int d13x_fb_updatearea(struct fb_vtable_s *vtable,
+                              const struct fb_area_s *area)
+{
+  uint32_t x;
+  uint32_t y;
+  uint32_t width;
+  uint32_t height;
+  uintptr_t address;
+
+  (void)vtable;
+
+  if (area == NULL || !g_fb.initialized || area->w == 0 || area->h == 0)
+    {
+      return -EINVAL;
+    }
+
+  x = area->x;
+  y = area->y;
+  width = area->w;
+  height = area->h;
+  if (x >= D13X_FB_WIDTH || y >= D13X_FB_HEIGHT * D13X_FB_BUFFERS)
+    {
+      return -EINVAL;
+    }
+
+  if (width > D13X_FB_WIDTH - x)
+    {
+      width = D13X_FB_WIDTH - x;
+    }
+
+  if (height > D13X_FB_HEIGHT * D13X_FB_BUFFERS - y)
+    {
+      height = D13X_FB_HEIGHT * D13X_FB_BUFFERS - y;
+    }
+
+  address = (uintptr_t)g_fb.memory + y * D13X_FB_STRIDE + x * 2u;
+
+  d13x_fb_clean_cache_area((const void *)address, width * 2u,
+                           D13X_FB_STRIDE, height);
+  g_fb.clean_yoffset = y < D13X_FB_HEIGHT ? 0 : D13X_FB_HEIGHT;
+  g_fb.area_clean = true;
+  return OK;
+}
+#endif
+
 static int d13x_fb_pandisplay(struct fb_vtable_s *vtable,
                               struct fb_planeinfo_s *pinfo)
 {
@@ -110,7 +217,18 @@ static int d13x_fb_pandisplay(struct fb_vtable_s *vtable,
     }
 
   address = (uintptr_t)g_fb.memory + pinfo->yoffset * D13X_FB_STRIDE;
-  d13x_fb_clean_cache();
+#ifdef CONFIG_FB_UPDATE
+  if (!g_fb.area_clean || g_fb.clean_yoffset != pinfo->yoffset)
+    {
+      d13x_fb_clean_cache_area((const void *)address, D13X_FB_STRIDE,
+                               D13X_FB_STRIDE, D13X_FB_HEIGHT);
+    }
+
+  g_fb.area_clean = false;
+#else
+  d13x_fb_clean_cache_area((const void *)address, D13X_FB_STRIDE,
+                           D13X_FB_STRIDE, D13X_FB_HEIGHT);
+#endif
   d13x_de_set_framebuffer(address);
 
   /* The DE switches buffers immediately and this port has no VSYNC IRQ.
@@ -159,6 +277,9 @@ static struct fb_vtable_s g_fb_vtable =
 {
   .getvideoinfo = d13x_fb_getvideoinfo,
   .getplaneinfo = d13x_fb_getplaneinfo,
+#ifdef CONFIG_FB_UPDATE
+  .updatearea = d13x_fb_updatearea,
+#endif
   .pandisplay = d13x_fb_pandisplay,
   .getpower = d13x_fb_getpower,
   .setpower = d13x_fb_setpower,

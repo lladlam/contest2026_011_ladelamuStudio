@@ -9,6 +9,7 @@
 .depend
 Make.dep
 __pycache__/
+validation-artifacts/
 
 # ArtInChip pack outputs; reproducible inputs remain tracked.
 vendor-overlay/pack/prebuilt/*.aic

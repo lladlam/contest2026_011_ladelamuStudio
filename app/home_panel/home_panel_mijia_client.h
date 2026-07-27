@@ -82,6 +82,12 @@ int home_panel_mijia_request_bool_property(const char *did,
                                             uint16_t siid,
                                             uint16_t piid,
                                             bool value);
+int home_panel_mijia_request_number_property(const char *did,
+                                              const char *device_name,
+                                              const char *property_name,
+                                              uint16_t siid,
+                                              uint16_t piid,
+                                              int value);
 int home_panel_mijia_request_scene(const char *scene_id,
                                    const char *scene_name);
 void home_panel_mijia_get_command_snapshot(
