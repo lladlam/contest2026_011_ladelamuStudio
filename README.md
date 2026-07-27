@@ -1,6 +1,6 @@
 # OpenVela D13x 衡山派家庭中控屏
 
-当前发布版本：**1.10.11.7**。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+当前发布版本：**1.11.15.8**。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 一、作品简介
 
@@ -46,7 +46,9 @@ patches/                 上游组件兼容性补丁
 scripts/integrate.sh     将本仓源码集成到 OpenVela 工作区
 scripts/build.sh         配置、编译并打包可烧录镜像
 logs/                    官方格式的 AI Coding 对话日志
+tests/                   驱动、稳定性与 XTS 的可重复验收步骤和结果模板
 .github/workflows/       GitHub Actions 构建与 Release 流程
+VALIDATION.md            当前候选固件的验收矩阵、指标、风险和证据索引
 VERSION                  四段累计版本号
 CHANGELOG.md             版本更新记录
 ```
@@ -183,6 +185,10 @@ LVGL BinFont 读取，不在运行时解析 TTF 或执行浮点光栅化。BinFo
 
 ## 七、实机验证状态
 
+完整测试步骤、当前候选状态、压力指标和 XTS 适用性记录见
+[`VALIDATION.md`](VALIDATION.md)。下表是历史联合验证摘要；新镜像必须在
+`VALIDATION.md` 中重新登记后，才能继承“已验证”结论。
+
 | 功能 | 状态 | 验证结果 |
 | --- | --- | --- |
 | SPI NOR 启动 | 已验证 | PBP 和 tinySPL 能加载并进入 NuttX |
@@ -198,7 +204,7 @@ LVGL BinFont 读取，不在运行时解析 TTF 或执行浮点光栅化。BinFo
 联合验证镜像 SHA-256：
 
 ```text
-569f4948b428b21379f91db43beb9432406725abbb6be75a5ded77f4c3acf7cc
+c4e6397fb0576591d13f4832bdad45dc9193b13d20479fedd2dc345179634341
 ```
 
 ## 八、许可证

@@ -104,7 +104,9 @@ struct mijia_command_request_s
 {
   enum mijia_command_kind_e kind;
   uint32_t generation;
+  bool value_is_boolean;
   bool target;
+  int number_value;
   uint16_t siid;
   uint16_t piid;
   char token[128];
@@ -410,17 +412,30 @@ static void mijia_publish(uint32_t generation,
                           const char *home_name, unsigned int device_count,
                           unsigned int online_count)
 {
+  const char *next_message = message != NULL ? message : "";
+  const char *next_home_name = home_name != NULL ? home_name : "";
+
   pthread_mutex_lock(&g_mijia.lock);
   if (generation == g_mijia.request_generation)
     {
+      bool changed = g_mijia.snapshot.state != state ||
+                     g_mijia.snapshot.device_count != device_count ||
+                     g_mijia.snapshot.online_count != online_count ||
+                     strcmp(g_mijia.snapshot.message, next_message) != 0 ||
+                     strcmp(g_mijia.snapshot.home_name,
+                            next_home_name) != 0;
+
       g_mijia.snapshot.state = state;
-      g_mijia.snapshot.revision = ++g_mijia.next_revision;
       g_mijia.snapshot.device_count = device_count;
       g_mijia.snapshot.online_count = online_count;
       mijia_copy_string(g_mijia.snapshot.message,
-                        sizeof(g_mijia.snapshot.message), message);
+                        sizeof(g_mijia.snapshot.message), next_message);
       mijia_copy_string(g_mijia.snapshot.home_name,
-                        sizeof(g_mijia.snapshot.home_name), home_name);
+                        sizeof(g_mijia.snapshot.home_name), next_home_name);
+      if (changed)
+        {
+          g_mijia.snapshot.revision = ++g_mijia.next_revision;
+        }
     }
 
   pthread_mutex_unlock(&g_mijia.lock);
@@ -1697,7 +1712,14 @@ static void *mijia_command_worker(void *arg)
                              request->property_name);
       cJSON_AddNumberToObject(payload, "siid", request->siid);
       cJSON_AddNumberToObject(payload, "piid", request->piid);
-      cJSON_AddBoolToObject(payload, "value", request->target);
+      if (request->value_is_boolean)
+        {
+          cJSON_AddBoolToObject(payload, "value", request->target);
+        }
+      else
+        {
+          cJSON_AddNumberToObject(payload, "value", request->number_value);
+        }
       path = "/api/device/property";
     }
   else
@@ -1778,7 +1800,9 @@ static int mijia_start_command(enum mijia_command_kind_e kind,
                                const char *identifier,
                                const char *display_name,
                                const char *property_name,
-                               uint16_t siid, uint16_t piid, bool target)
+                               uint16_t siid, uint16_t piid,
+                               bool value_is_boolean, bool target,
+                               int number_value)
 {
   struct mijia_command_request_s *request;
   pthread_attr_t attr;
@@ -1815,7 +1839,9 @@ static int mijia_start_command(enum mijia_command_kind_e kind,
 
   request->kind = kind;
   request->generation = g_mijia.request_generation;
+  request->value_is_boolean = value_is_boolean;
   request->target = target;
+  request->number_value = number_value;
   request->siid = siid;
   request->piid = piid;
   mijia_copy_string(request->token, sizeof(request->token), g_mijia.token);
@@ -2112,14 +2138,31 @@ int home_panel_mijia_request_bool_property(const char *did,
     }
 
   return mijia_start_command(MIJIA_COMMAND_PROPERTY, did, device_name,
-                             property_name, siid, piid, value);
+                             property_name, siid, piid, true, value, 0);
+}
+
+int home_panel_mijia_request_number_property(const char *did,
+                                              const char *device_name,
+                                              const char *property_name,
+                                              uint16_t siid,
+                                              uint16_t piid,
+                                              int value)
+{
+  if (property_name == NULL || property_name[0] == '\0')
+    {
+      return -EINVAL;
+    }
+
+  return mijia_start_command(MIJIA_COMMAND_PROPERTY, did, device_name,
+                             property_name, siid, piid, false, false,
+                             value);
 }
 
 int home_panel_mijia_request_scene(const char *scene_id,
                                    const char *scene_name)
 {
   return mijia_start_command(MIJIA_COMMAND_SCENE, scene_id, scene_name,
-                             NULL, 0, 0, false);
+                             NULL, 0, 0, true, false, 0);
 }
 
 void home_panel_mijia_get_snapshot(

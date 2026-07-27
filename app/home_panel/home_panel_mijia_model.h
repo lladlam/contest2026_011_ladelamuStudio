@@ -11,6 +11,28 @@
 #define HOME_PANEL_MAX_DEVICES  20
 #define HOME_PANEL_MAX_ROOMS    16
 #define HOME_PANEL_MAX_SCENES   8
+#define HOME_PANEL_MAX_CONTROLS 8
+
+enum home_panel_control_type_e
+{
+  HOME_PANEL_CONTROL_BOOLEAN = 0,
+  HOME_PANEL_CONTROL_NUMBER
+};
+
+struct home_panel_control_s
+{
+  char name[24];
+  uint16_t siid;
+  uint16_t piid;
+  enum home_panel_control_type_e type;
+  bool has_value;
+  bool boolean_value;
+  bool has_range;
+  int value;
+  int minimum;
+  int maximum;
+  int step;
+};
 
 struct home_panel_device_s
 {
@@ -43,6 +65,8 @@ struct home_panel_device_s
   uint16_t battery_siid;
   uint16_t battery_piid;
   int battery;
+  unsigned int control_count;
+  struct home_panel_control_s controls[HOME_PANEL_MAX_CONTROLS];
 };
 
 struct home_panel_room_s

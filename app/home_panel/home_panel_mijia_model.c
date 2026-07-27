@@ -122,6 +122,95 @@ static void model_brightness_range(cJSON *property,
   device->brightness_max = cJSON_IsNumber(maximum) ? maximum->valueint : 100;
 }
 
+static bool model_control_range(cJSON *property,
+                                struct home_panel_control_s *control)
+{
+  cJSON *range;
+  cJSON *minimum;
+  cJSON *maximum;
+  cJSON *step;
+
+  range = cJSON_GetObjectItemCaseSensitive(property, "range");
+  minimum = cJSON_IsArray(range) ? cJSON_GetArrayItem(range, 0) : NULL;
+  maximum = cJSON_IsArray(range) ? cJSON_GetArrayItem(range, 1) : NULL;
+  step = cJSON_IsArray(range) ? cJSON_GetArrayItem(range, 2) : NULL;
+  if (!cJSON_IsNumber(minimum) || !cJSON_IsNumber(maximum) ||
+      minimum->valueint >= maximum->valueint)
+    {
+      return false;
+    }
+
+  control->minimum = minimum->valueint;
+  control->maximum = maximum->valueint;
+  control->step = cJSON_IsNumber(step) && step->valueint > 0 ?
+                  step->valueint : 1;
+  return true;
+}
+
+static void model_parse_controls(cJSON *properties,
+                                 struct home_panel_device_s *device)
+{
+  cJSON *property;
+
+  cJSON_ArrayForEach(property, properties)
+    {
+      struct home_panel_control_s *control;
+      const char *name;
+      const char *type;
+      cJSON *value;
+
+      if (!model_writable(property) ||
+          device->control_count >= HOME_PANEL_MAX_CONTROLS)
+        {
+          continue;
+        }
+
+      name = model_string(property, "name");
+      type = model_string(property, "type");
+      if (name == NULL || name[0] == '\0')
+        {
+          continue;
+        }
+
+      control = &device->controls[device->control_count];
+      model_copy(control->name, sizeof(control->name), name);
+      model_property_ids(property, &control->siid, &control->piid);
+      value = cJSON_GetObjectItemCaseSensitive(property, "current_value");
+
+      if (cJSON_IsBool(value) || (type != NULL && strcmp(type, "bool") == 0))
+        {
+          control->type = HOME_PANEL_CONTROL_BOOLEAN;
+          control->has_value = cJSON_IsBool(value);
+          control->boolean_value = cJSON_IsTrue(value);
+        }
+      else if (cJSON_IsNumber(value) ||
+               (type != NULL &&
+                (strcmp(type, "int") == 0 || strcmp(type, "uint") == 0 ||
+                 strcmp(type, "float") == 0)))
+        {
+          if (!cJSON_IsNumber(value))
+            {
+              continue;
+            }
+
+          control->type = HOME_PANEL_CONTROL_NUMBER;
+          control->has_value = true;
+          control->value = value->valueint;
+          control->has_range = model_control_range(property, control);
+          if (!control->has_range)
+            {
+              continue;
+            }
+        }
+      else
+        {
+          continue;
+        }
+
+      device->control_count++;
+    }
+}
+
 static void model_parse_device(cJSON *object,
                                struct home_panel_device_s *device)
 {
@@ -188,6 +277,8 @@ static void model_parse_device(cJSON *object,
       device->has_battery = true;
       device->battery = (int)value;
     }
+
+  model_parse_controls(properties, device);
 }
 
 static struct home_panel_room_s *model_find_room(
@@ -284,6 +375,8 @@ int home_panel_mijia_model_apply_property(
   struct home_panel_device_s *device = NULL;
   int *number_target = NULL;
   bool *has_target = NULL;
+  bool control_matched = false;
+  bool changed = false;
   unsigned int index;
 
   for (index = 0; index < model->device_count; index++)
@@ -300,6 +393,48 @@ int home_panel_mijia_model_apply_property(
       return -ENOENT;
     }
 
+  for (index = 0; index < device->control_count; index++)
+    {
+      struct home_panel_control_s *control = &device->controls[index];
+
+      if (control->siid != siid || control->piid != piid)
+        {
+          continue;
+        }
+
+      control_matched = true;
+      if (control->type == HOME_PANEL_CONTROL_BOOLEAN)
+        {
+          if (!is_boolean)
+            {
+              return -EBADMSG;
+            }
+
+          if (!control->has_value ||
+              control->boolean_value != boolean_value)
+            {
+              control->has_value = true;
+              control->boolean_value = boolean_value;
+              changed = true;
+            }
+        }
+      else
+        {
+          if (!is_number)
+            {
+              return -EBADMSG;
+            }
+
+          if (!control->has_value || control->value != number_value)
+            {
+              control->has_value = true;
+              control->value = number_value;
+              changed = true;
+            }
+        }
+      break;
+    }
+
   if (device->power_siid == siid && device->power_piid == piid)
     {
       if (!is_boolean)
@@ -307,14 +442,13 @@ int home_panel_mijia_model_apply_property(
           return -EBADMSG;
         }
 
-      if (device->has_power && device->power == boolean_value)
+      if (!device->has_power || device->power != boolean_value)
         {
-          return 0;
+          device->has_power = true;
+          device->power = boolean_value;
+          changed = true;
         }
-
-      device->has_power = true;
-      device->power = boolean_value;
-      return 1;
+      return changed ? 1 : 0;
     }
 
   if (device->brightness_siid == siid && device->brightness_piid == piid)
@@ -340,7 +474,7 @@ int home_panel_mijia_model_apply_property(
     }
   else
     {
-      return -ENOENT;
+      return control_matched ? (changed ? 1 : 0) : -ENOENT;
     }
 
   if (!is_number)
@@ -348,14 +482,14 @@ int home_panel_mijia_model_apply_property(
       return -EBADMSG;
     }
 
-  if (*has_target && *number_target == number_value)
+  if (!*has_target || *number_target != number_value)
     {
-      return 0;
+      *has_target = true;
+      *number_target = number_value;
+      changed = true;
     }
 
-  *has_target = true;
-  *number_target = number_value;
-  return 1;
+  return changed ? 1 : 0;
 }
 
 int home_panel_mijia_model_parse(const char *json, uint32_t revision,
