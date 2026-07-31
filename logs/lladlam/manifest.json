@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "team_id": "contest2026_011_ladelamuStudio",
   "github_login": "lladlam",
-  "generator": "openvela-history-import@1.0.0",
-  "updated_at": "2026-07-13T14:48:07.914Z",
+  "generator": "codex-collector@1.2.0",
+  "updated_at": "2026-07-31T01:21:54.599Z",
   "sessions": [
     {
       "session_id": "ses_10adb2868ffejCzi4xSuZVRSxU",
@@ -258,15 +258,16 @@
       "session_id": "019f5199-277a-7380-a86d-c341cbed2a3c",
       "tool": "codex",
       "started_at": "2026-07-11T14:38:27.340Z",
-      "last_event_at": "2026-07-13T14:48:02.562Z",
-      "event_count": 3723,
+      "last_event_at": "2026-07-31T01:21:52.679Z",
+      "event_count": 15093,
+      "raw_event_count": 31541,
       "file_path": "logs/lladlam/2026-07-11/codex__019f5199-277a-7380-a86d-c341cbed2a3c.jsonl",
       "collection_mode": "cli",
-      "tokens_total": 282138564,
-      "redacted_count_total": 1,
+      "tokens_total": 1096757770,
+      "redacted_count_total": 94,
       "health": "degraded",
-      "data_completeness_warning": "Manual snapshot of an active Codex session; platform instructions and encrypted internal reasoning are not conversation events and were not exported.",
-      "source": "Codex CLI rollout history import",
+      "data_completeness_warning": "Structured snapshot of an active Codex CLI rollout. Exposed reasoning summaries are included; encrypted internal reasoning is not exposed by Codex and therefore cannot be exported.",
+      "source": "Codex CLI rollout history structured export",
       "model": "gpt-5.6-sol"
     }
   ]

@@ -147,6 +147,55 @@ static bool model_control_range(cJSON *property,
   return true;
 }
 
+static void model_parse_observables(cJSON *properties,
+                                    struct home_panel_device_s *device)
+{
+  cJSON *property;
+
+  cJSON_ArrayForEach(property, properties)
+    {
+      struct home_panel_observable_s *observable;
+      const char *name;
+      const char *type;
+      cJSON *value;
+      cJSON *notifiable;
+
+      if (device->observable_count >= HOME_PANEL_MAX_OBSERVABLES)
+        {
+          break;
+        }
+
+      name = model_string(property, "name");
+      type = model_string(property, "type");
+      value = cJSON_GetObjectItemCaseSensitive(property, "current_value");
+      notifiable = cJSON_GetObjectItemCaseSensitive(property, "notifiable");
+      if (name == NULL || name[0] == '\0' ||
+          (!cJSON_IsBool(value) && !cJSON_IsNumber(value)))
+        {
+          continue;
+        }
+
+      observable = &device->observables[device->observable_count];
+      model_copy(observable->name, sizeof(observable->name), name);
+      model_property_ids(property, &observable->siid, &observable->piid);
+      observable->notifiable = cJSON_IsTrue(notifiable);
+      if (cJSON_IsBool(value) ||
+          (type != NULL && strcmp(type, "bool") == 0))
+        {
+          observable->type = HOME_PANEL_CONTROL_BOOLEAN;
+          observable->has_value = true;
+          observable->boolean_value = cJSON_IsTrue(value);
+        }
+      else
+        {
+          observable->type = HOME_PANEL_CONTROL_NUMBER;
+          observable->has_value = true;
+          observable->value = value->valueint;
+        }
+      device->observable_count++;
+    }
+}
+
 static void model_parse_controls(cJSON *properties,
                                  struct home_panel_device_s *device)
 {
@@ -278,6 +327,7 @@ static void model_parse_device(cJSON *object,
       device->battery = (int)value;
     }
 
+  model_parse_observables(properties, device);
   model_parse_controls(properties, device);
 }
 
@@ -376,6 +426,7 @@ int home_panel_mijia_model_apply_property(
   int *number_target = NULL;
   bool *has_target = NULL;
   bool control_matched = false;
+  bool observable_matched = false;
   bool changed = false;
   unsigned int index;
 
@@ -391,6 +442,48 @@ int home_panel_mijia_model_apply_property(
   if (device == NULL)
     {
       return -ENOENT;
+    }
+
+  for (index = 0; index < device->observable_count; index++)
+    {
+      struct home_panel_observable_s *observable =
+        &device->observables[index];
+
+      if (observable->siid != siid || observable->piid != piid)
+        {
+          continue;
+        }
+
+      observable_matched = true;
+      if (observable->type == HOME_PANEL_CONTROL_BOOLEAN)
+        {
+          if (!is_boolean)
+            {
+              return -EBADMSG;
+            }
+          if (!observable->has_value ||
+              observable->boolean_value != boolean_value)
+            {
+              observable->has_value = true;
+              observable->boolean_value = boolean_value;
+              changed = true;
+            }
+        }
+      else
+        {
+          if (!is_number)
+            {
+              return -EBADMSG;
+            }
+          if (!observable->has_value ||
+              observable->value != number_value)
+            {
+              observable->has_value = true;
+              observable->value = number_value;
+              changed = true;
+            }
+        }
+      break;
     }
 
   for (index = 0; index < device->control_count; index++)
@@ -474,7 +567,8 @@ int home_panel_mijia_model_apply_property(
     }
   else
     {
-      return control_matched ? (changed ? 1 : 0) : -ENOENT;
+      return control_matched || observable_matched ?
+             (changed ? 1 : 0) : -ENOENT;
     }
 
   if (!is_number)

@@ -11,7 +11,8 @@
 #define HOME_PANEL_MAX_DEVICES  20
 #define HOME_PANEL_MAX_ROOMS    16
 #define HOME_PANEL_MAX_SCENES   8
-#define HOME_PANEL_MAX_CONTROLS 8
+#define HOME_PANEL_MAX_CONTROLS 12
+#define HOME_PANEL_MAX_OBSERVABLES 24
 
 enum home_panel_control_type_e
 {
@@ -32,6 +33,18 @@ struct home_panel_control_s
   int minimum;
   int maximum;
   int step;
+};
+
+struct home_panel_observable_s
+{
+  char name[24];
+  uint16_t siid;
+  uint16_t piid;
+  enum home_panel_control_type_e type;
+  bool has_value;
+  bool boolean_value;
+  bool notifiable;
+  int value;
 };
 
 struct home_panel_device_s
@@ -67,6 +80,9 @@ struct home_panel_device_s
   int battery;
   unsigned int control_count;
   struct home_panel_control_s controls[HOME_PANEL_MAX_CONTROLS];
+  unsigned int observable_count;
+  struct home_panel_observable_s
+    observables[HOME_PANEL_MAX_OBSERVABLES];
 };
 
 struct home_panel_room_s

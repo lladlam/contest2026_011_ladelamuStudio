@@ -4,11 +4,13 @@
 
 #include <nuttx/config.h>
 
+#include <arch/board/board.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <nuttx/arch.h>
 #include <nuttx/net/dns.h>
 #include <nuttx/net/icmp.h>
 #include <pthread.h>
@@ -30,6 +32,7 @@
 #include "home_panel_mijia_client.h"
 #include "home_panel_mijia_model.h"
 #include "home_panel_font.h"
+#include "home_panel_proactive.h"
 
 LV_FONT_DECLARE(home_panel_digits_28);
 
@@ -41,17 +44,20 @@ LV_FONT_DECLARE(home_panel_digits_28);
 #define ROOM_CARD_WIDTH   292
 #define ROOM_CARD_HEIGHT  216
 #define ROOM_CARD_GAP     14
-#define HOME_PAGE_COUNT   4
+#define HOME_PAGE_COUNT   5
 #define HOME_CARD_COUNT   3
 
-#define COLOR_BG          0x0f1114
-#define COLOR_SURFACE     0x191d22
-#define COLOR_SURFACE_2   0x22272e
-#define COLOR_TEXT        0xf4f6f8
-#define COLOR_MUTED       0x929aa5
-#define COLOR_ORANGE      0xff9f2f
-#define COLOR_BLUE        0x4b8df8
-#define COLOR_GREEN       0x47c486
+#define COLOR_BG          0x101214
+#define COLOR_NAV         0x151719
+#define COLOR_SURFACE     0x1c1f21
+#define COLOR_SURFACE_2   0x282d30
+#define COLOR_BORDER      0x353b3e
+#define COLOR_TEXT        0xf5f7f8
+#define COLOR_MUTED       0x9ba3a7
+#define COLOR_ORANGE      0xf3a447
+#define COLOR_BLUE        0x63a7ff
+#define COLOR_GREEN       0x55c996
+#define COLOR_NAV_ACTIVE  0x213139
 
 #define NETWORK_INTERFACE       "eth0"
 #define NETWORK_PROBE_INTERVAL  60
@@ -61,14 +67,23 @@ LV_FONT_DECLARE(home_panel_digits_28);
 #define NETWORK_PING_POLLS      75
 #define NETWORK_PING_DATA_SIZE  16
 #define NETWORK_DNS_BUFFER_SIZE 512
+#define NETWORK_LINK_GRACE_SEC  12
 #define UI_LOOP_MAX_DELAY_MS    5
-#define MIJIA_UI_POLL_MS        25
-#define UI_THREAD_PRIORITY      95
+#define MIJIA_UI_POLL_MS        100
+#define PROACTIVE_TICK_MS       50
+#define PROACTIVE_UI_POLL_MS    100
+#define PROACTIVE_CLOUD_POLL_MS 500
+#define UI_THREAD_PRIORITY      105
 #define UI_SLOW_LOG_MS          24
-#define UI_RADIUS               0
+#define UI_RADIUS               6
+#define UI_CONTROL_RADIUS       16
 #define TIME_VALID_EPOCH        1735689600
 #define TIME_UPDATE_INTERVAL_MS 1000
 #define NTP_RETRY_INTERVAL_MS   30000
+#define PROACTIVE_PROFILE_SIZE  768
+#define PROACTIVE_THREAD_STACK  8192
+#define PROACTIVE_PERSIST_RETRY_MS 1000
+#define PROACTIVE_PAGE          3
 
 enum network_state_e
 {
@@ -89,6 +104,9 @@ static lv_obj_t *g_page_settings_probe_labels[HOME_PAGE_COUNT];
 static lv_obj_t *g_page_settings_account_labels[HOME_PAGE_COUNT];
 static lv_obj_t *g_page_home_summary_labels[HOME_PAGE_COUNT];
 static lv_obj_t *g_nav_buttons[HOME_PAGE_COUNT];
+static lv_obj_t *g_nav_icons[HOME_PAGE_COUNT];
+static lv_obj_t *g_nav_labels[HOME_PAGE_COUNT];
+static lv_obj_t *g_nav_indicators[HOME_PAGE_COUNT];
 static uint32_t g_page_model_revisions[HOME_PAGE_COUNT];
 static lv_obj_t *g_network_label;
 static lv_obj_t *g_settings_network_label;
@@ -106,6 +124,7 @@ static lv_image_dsc_t g_login_qr_image;
 static uint8_t *g_login_qr_data;
 static uint32_t g_login_qr_revision;
 static struct home_panel_family_model_s g_family_model;
+static struct home_panel_family_model_s g_family_update_model;
 static bool g_family_model_valid;
 static bool g_model_refresh_pending;
 static uint32_t g_family_ui_revision;
@@ -124,6 +143,42 @@ static lv_obj_t *g_detail_subtitle_label;
 static lv_obj_t *g_detail_temperature_label;
 static lv_obj_t *g_detail_humidity_label;
 static lv_obj_t *g_detail_battery_label;
+static lv_obj_t *g_proactive_mode_label;
+static lv_obj_t *g_proactive_history_label;
+static lv_obj_t *g_proactive_time_label;
+static lv_obj_t *g_proactive_confidence_label;
+static lv_obj_t *g_proactive_progress_label;
+static lv_obj_t *g_proactive_suggestion_title;
+static lv_obj_t *g_proactive_reason_label;
+static lv_obj_t *g_proactive_action_label;
+static lv_obj_t *g_proactive_feedback_label;
+static lv_obj_t *g_proactive_accept_button;
+static lv_obj_t *g_proactive_automation_button;
+static lv_obj_t *g_proactive_ignore_button;
+static lv_obj_t *g_proactive_less_button;
+static lv_obj_t *g_proactive_return_button;
+static lv_obj_t *g_proactive_reset_button;
+static bool g_proactive_persist_busy;
+static bool g_proactive_persist_pending;
+static uint32_t g_proactive_persist_retry_at;
+static uint32_t g_displayed_proactive_revision;
+static uint32_t g_displayed_agent_revision;
+static uint32_t g_requested_proactive_key;
+
+struct proactive_command_tracker_s
+{
+  uint32_t device_hash;
+  uint32_t decision_key;
+  uint32_t deadline_ms;
+  uint16_t siid;
+  uint16_t piid;
+  int value;
+  enum home_proactive_event_kind_e kind;
+  bool active;
+  bool automation;
+};
+
+static struct proactive_command_tracker_s g_proactive_command;
 
 struct home_panel_device_binding_s
 {
@@ -175,6 +230,14 @@ static void apply_mijia_snapshot(
   const struct home_panel_mijia_snapshot_s *snapshot);
 static void show_room_device_detail(unsigned int device_index);
 static void render_room_devices(unsigned int room_index);
+static void update_proactive_context(void);
+static void update_proactive_widgets(void);
+static void schedule_proactive_persist(void);
+static uint32_t proactive_hash_device_id(const char *did);
+static const struct home_panel_control_s *proactive_find_control(
+  const struct home_panel_device_s *device, uint16_t siid, uint16_t piid);
+static bool proactive_safe_action_device(
+  const struct home_panel_device_s *device);
 
 static bool set_label_text_if_changed(lv_obj_t *label, const char *text)
 {
@@ -218,6 +281,28 @@ static void configure_fast_button(lv_obj_t *button)
   lv_obj_set_style_shadow_width(button, 0, 0);
   lv_obj_set_style_transform_width(button, 0, LV_STATE_PRESSED);
   lv_obj_set_style_transform_height(button, 0, LV_STATE_PRESSED);
+}
+
+static void style_panel(lv_obj_t *panel)
+{
+  lv_obj_set_style_radius(panel, UI_RADIUS, 0);
+  lv_obj_set_style_shadow_width(panel, 0, 0);
+  lv_obj_set_style_border_width(panel, 1, 0);
+  lv_obj_set_style_border_color(panel, lv_color_hex(COLOR_BORDER), 0);
+  lv_obj_set_style_bg_color(panel, lv_color_hex(COLOR_SURFACE), 0);
+}
+
+static void style_toggle(lv_obj_t *toggle, bool checked)
+{
+  lv_obj_set_style_radius(toggle, UI_CONTROL_RADIUS, 0);
+  lv_obj_set_style_shadow_width(toggle, 0, 0);
+  lv_obj_set_style_border_width(toggle, 1, 0);
+  lv_obj_set_style_border_color(
+    toggle, lv_color_hex(checked ? COLOR_GREEN : COLOR_BORDER), 0);
+  lv_obj_set_style_bg_color(
+    toggle, lv_color_hex(checked ? COLOR_GREEN : COLOR_SURFACE_2), 0);
+  lv_obj_set_style_bg_color(toggle, lv_color_hex(COLOR_BLUE),
+                            LV_STATE_PRESSED);
 }
 
 static void update_time_ui(bool force)
@@ -757,7 +842,9 @@ static int network_ping_host(const char *hostname)
 static void *network_worker(void *arg)
 {
   unsigned int elapsed = NETWORK_PROBE_INTERVAL;
+  unsigned int initial_down_seconds = 0;
   bool was_connected = false;
+  bool link_seen = false;
   enum network_link_state_e last_link = NETWORK_LINK_INITIALIZING;
   uint8_t last_flags = UINT8_MAX;
 
@@ -789,10 +876,19 @@ static void *network_worker(void *arg)
           network_set_state(NETWORK_INITIALIZING);
           was_connected = false;
           elapsed = NETWORK_PROBE_INTERVAL;
+          initial_down_seconds = 0;
         }
       else if (!connected)
         {
-          network_set_state(NETWORK_DISCONNECTED);
+          if (!link_seen && initial_down_seconds < NETWORK_LINK_GRACE_SEC)
+            {
+              network_set_state(NETWORK_INITIALIZING);
+              initial_down_seconds++;
+            }
+          else
+            {
+              network_set_state(NETWORK_DISCONNECTED);
+            }
           was_connected = false;
           elapsed = NETWORK_PROBE_INTERVAL;
         }
@@ -803,6 +899,8 @@ static void *network_worker(void *arg)
            */
 
           network_set_state(NETWORK_CHECKING);
+          link_seen = true;
+          initial_down_seconds = 0;
           was_connected = false;
         }
       else if (!was_connected || refresh ||
@@ -820,6 +918,8 @@ static void *network_worker(void *arg)
             {
               network_set_state(NETWORK_CHECKING);
             }
+          link_seen = true;
+          initial_down_seconds = 0;
           inet_ntop(AF_INET, &address, address_text, sizeof(address_text));
           replies = network_ping_host("mi.com");
           if (replies <= 0 && network_has_carrier())
@@ -1410,7 +1510,7 @@ static void show_login(lv_event_t *event)
   lv_obj_center(dialog);
   lv_obj_set_style_radius(dialog, UI_RADIUS, 0);
   lv_obj_set_style_border_width(dialog, 1, 0);
-  lv_obj_set_style_border_color(dialog, lv_color_hex(0x343b44), 0);
+  lv_obj_set_style_border_color(dialog, lv_color_hex(COLOR_BORDER), 0);
   lv_obj_set_style_bg_color(dialog, lv_color_hex(COLOR_SURFACE), 0);
   lv_obj_set_style_pad_all(dialog, 24, 0);
   lv_obj_clear_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);
@@ -1580,6 +1680,7 @@ static lv_obj_t *make_nav_button(lv_obj_t *parent, const char *symbol,
                                  unsigned int page)
 {
   lv_obj_t *button = lv_button_create(parent);
+  lv_obj_t *indicator;
   lv_obj_t *icon;
   lv_obj_t *label;
 
@@ -1588,21 +1689,58 @@ static lv_obj_t *make_nav_button(lv_obj_t *parent, const char *symbol,
   lv_obj_set_size(button, 130, 52);
   lv_obj_set_style_radius(button, UI_RADIUS, 0);
   lv_obj_set_style_shadow_width(button, 0, 0);
-  lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_BG), 0);
-  lv_obj_set_style_bg_color(button, lv_color_hex(0x303740),
+  lv_obj_set_style_border_width(button, 0, 0);
+  lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_NAV), 0);
+  lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_SURFACE_2),
                             LV_STATE_PRESSED);
   lv_obj_add_event_cb(button, nav_clicked, LV_EVENT_PRESSED,
                       (void *)(uintptr_t)page);
 
-  icon = make_label(button, symbol, 12, 15,
+  indicator = lv_obj_create(button);
+  lv_obj_remove_style_all(indicator);
+  lv_obj_set_pos(indicator, 0, 10);
+  lv_obj_set_size(indicator, 3, 32);
+  lv_obj_set_style_radius(indicator, 2, 0);
+  lv_obj_set_style_bg_color(indicator, lv_color_hex(COLOR_BLUE), 0);
+  lv_obj_set_style_bg_opa(indicator, LV_OPA_COVER, 0);
+  lv_obj_add_flag(indicator, LV_OBJ_FLAG_HIDDEN);
+
+  icon = make_label(button, symbol, 16, 15,
                     lv_color_hex(COLOR_MUTED),
                     &lv_font_montserrat_16);
-  label = make_label(button, text, 42, 13,
+  label = make_label(button, text, 48, 13,
                      lv_color_hex(COLOR_MUTED),
                      home_panel_font_get());
-  (void)icon;
-  (void)label;
+  g_nav_icons[page] = icon;
+  g_nav_labels[page] = label;
+  g_nav_indicators[page] = indicator;
   return button;
+}
+
+static void set_nav_selected(unsigned int page, bool selected)
+{
+  if (page >= HOME_PAGE_COUNT || g_nav_buttons[page] == NULL)
+    {
+      return;
+    }
+
+  lv_obj_set_style_bg_color(
+    g_nav_buttons[page],
+    lv_color_hex(selected ? COLOR_NAV_ACTIVE : COLOR_NAV), 0);
+  lv_obj_set_style_text_color(
+    g_nav_icons[page],
+    lv_color_hex(selected ? COLOR_BLUE : COLOR_MUTED), 0);
+  lv_obj_set_style_text_color(
+    g_nav_labels[page],
+    lv_color_hex(selected ? COLOR_TEXT : COLOR_MUTED), 0);
+  if (selected)
+    {
+      lv_obj_remove_flag(g_nav_indicators[page], LV_OBJ_FLAG_HIDDEN);
+    }
+  else
+    {
+      lv_obj_add_flag(g_nav_indicators[page], LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void nav_clicked(lv_event_t *event)
@@ -1618,6 +1756,7 @@ static lv_obj_t *make_scene_button(lv_obj_t *parent, const char *symbol,
                                    lv_color_t accent)
 {
   lv_obj_t *button = lv_button_create(parent);
+  lv_obj_t *indicator;
   lv_obj_t *icon;
   lv_obj_t *label;
 
@@ -1630,12 +1769,21 @@ static lv_obj_t *make_scene_button(lv_obj_t *parent, const char *symbol,
   lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_SURFACE_2),
                             LV_STATE_PRESSED);
   lv_obj_set_style_border_width(button, 1, 0);
-  lv_obj_set_style_border_color(button, lv_color_hex(0x2c323a), 0);
+  lv_obj_set_style_border_color(button, lv_color_hex(COLOR_BORDER), 0);
   g_scene_bindings[g_current_page][binding_index].scene = scene;
   lv_obj_add_event_cb(button, scene_clicked, LV_EVENT_CLICKED,
                       &g_scene_bindings[g_current_page][binding_index]);
 
-  icon = make_label(button, symbol, 14, 22, accent, &lv_font_montserrat_16);
+  indicator = lv_obj_create(button);
+  lv_obj_remove_style_all(indicator);
+  lv_obj_set_pos(indicator, 0, 12);
+  lv_obj_set_size(indicator, 3, 48);
+  lv_obj_set_style_radius(indicator, 2, 0);
+  lv_obj_set_style_bg_color(indicator, accent, 0);
+  lv_obj_set_style_bg_opa(indicator, LV_OPA_COVER, 0);
+
+  icon = make_label(button, symbol, 18, 22, accent,
+                    &lv_font_montserrat_16);
   label = make_label(button, scene->name, 54, 20,
                      lv_color_hex(COLOR_TEXT),
                      home_panel_font_get());
@@ -1739,22 +1887,26 @@ static void make_device_card(lv_obj_t *parent, int x, int y,
 
   lv_obj_set_pos(card, x, y);
   lv_obj_set_size(card, width, height);
-  lv_obj_set_style_radius(card, UI_RADIUS, 0);
-  lv_obj_set_style_border_width(card, 1, 0);
-  lv_obj_set_style_border_color(card, lv_color_hex(0x2c323a), 0);
-  lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_SURFACE), 0);
+  style_panel(card);
   lv_obj_set_style_pad_all(card, 18, 0);
   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-  make_label(card, symbol, 0, 0, accent, &lv_font_montserrat_16);
+  label = lv_obj_create(card);
+  lv_obj_remove_style_all(label);
+  lv_obj_set_pos(label, 0, 0);
+  lv_obj_set_size(label, 38, 38);
+  lv_obj_set_style_radius(label, UI_RADIUS, 0);
+  lv_obj_set_style_bg_color(label, lv_color_hex(COLOR_SURFACE_2), 0);
+  lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+  make_label(label, symbol, 11, 10, accent, &lv_font_montserrat_16);
   make_label(card, device->room[0] != '\0' ? device->room : "未分房间",
-             0, 58, lv_color_hex(COLOR_MUTED),
+             50, 8, lv_color_hex(COLOR_MUTED),
              home_panel_font_get());
-  label = make_label(card, device->name, 0, 88,
+  label = make_label(card, device->name, 0, 62,
                      lv_color_hex(COLOR_TEXT), home_panel_font_get());
   lv_obj_set_width(label, width - 36);
   lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-  value_label = make_label(card, value, 0, 122, accent, value_font);
+  value_label = make_label(card, value, 0, 100, accent, value_font);
 
   state_text = device_state_text(device);
   state = make_label(card, state_text, 0, 169,
@@ -1778,13 +1930,7 @@ static void make_device_card(lv_obj_t *parent, int x, int y,
   configure_fast_button(toggle);
   lv_obj_set_size(toggle, 52, 32);
   lv_obj_align(toggle, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-  lv_obj_set_style_radius(toggle, UI_RADIUS, 0);
-  lv_obj_set_style_shadow_width(toggle, 0, 0);
-  lv_obj_set_style_bg_color(toggle,
-                            lv_color_hex(checked ? COLOR_GREEN :
-                                         COLOR_SURFACE_2), 0);
-  lv_obj_set_style_bg_color(toggle, lv_color_hex(COLOR_BLUE),
-                            LV_STATE_PRESSED);
+  style_toggle(toggle, checked);
   lv_obj_add_flag(toggle, LV_OBJ_FLAG_CHECKABLE);
   if (checked)
     {
@@ -1818,8 +1964,10 @@ static lv_obj_t *make_action_button(lv_obj_t *parent, const char *text,
   lv_obj_set_size(button, width, 52);
   lv_obj_set_style_radius(button, UI_RADIUS, 0);
   lv_obj_set_style_shadow_width(button, 0, 0);
+  lv_obj_set_style_border_width(button, 1, 0);
+  lv_obj_set_style_border_color(button, lv_color_hex(0x7bb4ff), 0);
   lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_BLUE), 0);
-  lv_obj_set_style_bg_color(button, lv_color_hex(0x3475d6),
+  lv_obj_set_style_bg_color(button, lv_color_hex(0x478ee8),
                             LV_STATE_PRESSED);
   lv_obj_add_event_cb(button, action_clicked, LV_EVENT_CLICKED, (void *)text);
 
@@ -1828,6 +1976,14 @@ static lv_obj_t *make_action_button(lv_obj_t *parent, const char *text,
   set_chinese_font(label);
   lv_obj_center(label);
   return button;
+}
+
+static void style_secondary_action(lv_obj_t *button)
+{
+  lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_SURFACE_2), 0);
+  lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_BORDER),
+                            LV_STATE_PRESSED);
+  lv_obj_set_style_border_color(button, lv_color_hex(COLOR_BORDER), 0);
 }
 
 static lv_obj_t *make_info_row(lv_obj_t *parent, const char *name,
@@ -2014,7 +2170,7 @@ static void update_room_button_styles(void)
       g_room_buttons[g_room_highlighted] != NULL)
     {
       lv_obj_set_style_bg_color(
-        g_room_buttons[g_room_highlighted], lv_color_hex(0x13161a), 0);
+        g_room_buttons[g_room_highlighted], lv_color_hex(COLOR_NAV), 0);
     }
 
   if (g_selected_room < g_family_model.room_count &&
@@ -2022,7 +2178,7 @@ static void update_room_button_styles(void)
       g_room_highlighted != g_selected_room)
     {
       lv_obj_set_style_bg_color(g_room_buttons[g_selected_room],
-                                lv_color_hex(COLOR_SURFACE_2), 0);
+                                lv_color_hex(COLOR_NAV_ACTIVE), 0);
     }
 
   g_room_highlighted = g_selected_room;
@@ -2109,7 +2265,7 @@ static void make_room_device_summary(lv_obj_t *parent, int x, int y,
   lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_SURFACE_2),
                             LV_STATE_PRESSED);
   lv_obj_set_style_border_width(card, 1, 0);
-  lv_obj_set_style_border_color(card, lv_color_hex(0x2c323a), 0);
+  lv_obj_set_style_border_color(card, lv_color_hex(COLOR_BORDER), 0);
   lv_obj_add_event_cb(card, room_device_clicked, LV_EVENT_CLICKED,
                       (void *)(uintptr_t)(device_index + 1));
 
@@ -2152,11 +2308,7 @@ static lv_obj_t *make_detail_metric(lv_obj_t *parent, int x, int y,
 
   lv_obj_set_pos(card, x, y);
   lv_obj_set_size(card, 184, 76);
-  lv_obj_set_style_radius(card, UI_RADIUS, 0);
-  lv_obj_set_style_shadow_width(card, 0, 0);
-  lv_obj_set_style_border_width(card, 1, 0);
-  lv_obj_set_style_border_color(card, lv_color_hex(0x2c323a), 0);
-  lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_SURFACE), 0);
+  style_panel(card);
   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
   make_label(card, name, 12, 8, lv_color_hex(COLOR_MUTED),
              home_panel_font_get());
@@ -2187,11 +2339,7 @@ static void make_detail_control(lv_obj_t *parent, int y,
   lv_obj_set_pos(row, 0, y);
   lv_obj_set_size(row, 586,
                   property->type == HOME_PANEL_CONTROL_NUMBER ? 92 : 64);
-  lv_obj_set_style_radius(row, UI_RADIUS, 0);
-  lv_obj_set_style_shadow_width(row, 0, 0);
-  lv_obj_set_style_border_width(row, 1, 0);
-  lv_obj_set_style_border_color(row, lv_color_hex(0x2c323a), 0);
-  lv_obj_set_style_bg_color(row, lv_color_hex(COLOR_SURFACE), 0);
+  style_panel(row);
   lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
   label = make_label(row, control_display_name(property->name), 14, 10,
                      lv_color_hex(COLOR_TEXT), home_panel_font_get());
@@ -2211,14 +2359,7 @@ static void make_detail_control(lv_obj_t *parent, int y,
       configure_fast_button(control);
       lv_obj_set_size(control, 52, 32);
       lv_obj_set_pos(control, 510, 6);
-      lv_obj_set_style_radius(control, UI_RADIUS, 0);
-      lv_obj_set_style_shadow_width(control, 0, 0);
-      lv_obj_set_style_bg_color(control,
-                                lv_color_hex(property->boolean_value ?
-                                             COLOR_GREEN : COLOR_SURFACE_2),
-                                0);
-      lv_obj_set_style_bg_color(control, lv_color_hex(COLOR_BLUE),
-                                LV_STATE_PRESSED);
+      style_toggle(control, property->boolean_value);
       lv_obj_add_flag(control, LV_OBJ_FLAG_CHECKABLE);
       if (property->boolean_value)
         {
@@ -2251,6 +2392,10 @@ static void make_detail_control(lv_obj_t *parent, int y,
                                 LV_PART_INDICATOR);
       lv_obj_set_style_bg_color(control, lv_color_hex(COLOR_TEXT),
                                 LV_PART_KNOB);
+      lv_obj_set_style_radius(control, UI_CONTROL_RADIUS, LV_PART_MAIN);
+      lv_obj_set_style_radius(control, UI_CONTROL_RADIUS,
+                              LV_PART_INDICATOR);
+      lv_obj_set_style_radius(control, UI_CONTROL_RADIUS, LV_PART_KNOB);
       lv_obj_add_event_cb(control, detail_number_changed,
                           LV_EVENT_VALUE_CHANGED, binding);
       lv_obj_add_event_cb(control, detail_number_released,
@@ -2324,6 +2469,8 @@ static void show_room_device_detail(unsigned int device_index)
   lv_obj_set_size(back, 42, 42);
   lv_obj_set_style_radius(back, UI_RADIUS, 0);
   lv_obj_set_style_shadow_width(back, 0, 0);
+  lv_obj_set_style_border_width(back, 1, 0);
+  lv_obj_set_style_border_color(back, lv_color_hex(COLOR_BORDER), 0);
   lv_obj_set_style_bg_color(back, lv_color_hex(COLOR_SURFACE), 0);
   lv_obj_add_event_cb(back, close_room_device_detail, LV_EVENT_CLICKED, NULL);
   label = lv_label_create(back);
@@ -2565,7 +2712,7 @@ static void create_rooms_page(void)
   lv_obj_set_pos(sidebar, 0, 0);
   lv_obj_set_size(sidebar, ROOM_NAV_WIDTH,
                   PANEL_HEIGHT - TOPBAR_HEIGHT);
-  lv_obj_set_style_bg_color(sidebar, lv_color_hex(0x13161a), 0);
+  lv_obj_set_style_bg_color(sidebar, lv_color_hex(COLOR_NAV), 0);
   lv_obj_set_style_bg_opa(sidebar, LV_OPA_COVER, 0);
   lv_obj_set_style_pad_left(sidebar, 10, 0);
   lv_obj_set_style_pad_right(sidebar, 10, 0);
@@ -2589,8 +2736,9 @@ static void create_rooms_page(void)
       lv_obj_set_size(button, ROOM_NAV_WIDTH - 20, 50);
       lv_obj_set_style_radius(button, UI_RADIUS, 0);
       lv_obj_set_style_shadow_width(button, 0, 0);
-      lv_obj_set_style_bg_color(button, lv_color_hex(0x13161a), 0);
-      lv_obj_set_style_bg_color(button, lv_color_hex(0x303740),
+      lv_obj_set_style_border_width(button, 0, 0);
+      lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_NAV), 0);
+      lv_obj_set_style_bg_color(button, lv_color_hex(COLOR_SURFACE_2),
                                 LV_STATE_PRESSED);
       lv_obj_add_event_cb(button, room_clicked, LV_EVENT_PRESSED,
                           (void *)(uintptr_t)(index + 1));
@@ -2663,6 +2811,984 @@ static void create_scenes_page(void)
                               home_panel_font_get());
 }
 
+struct proactive_persist_work_s
+{
+  size_t length;
+  uint8_t data[PROACTIVE_PROFILE_SIZE];
+};
+
+static void *proactive_persist_worker(void *arg)
+{
+  struct proactive_persist_work_s *work = arg;
+  irqstate_t flags;
+  int ret = board_agent_persist_write(work->data, work->length);
+
+  syslog(ret == 0 ? LOG_INFO : LOG_WARNING,
+         "[HOME][AGENT] profile persist ret=%d bytes=%u\n",
+         ret, (unsigned int)work->length);
+  free(work);
+  flags = up_irq_save();
+  g_proactive_persist_busy = false;
+  up_irq_restore(flags);
+  return NULL;
+}
+
+static void schedule_proactive_persist(void)
+{
+  struct proactive_persist_work_s *work;
+  struct sched_param param;
+  irqstate_t flags;
+  pthread_attr_t attr;
+  pthread_t thread;
+  int ret;
+
+  flags = up_irq_save();
+  if (g_proactive_persist_busy)
+    {
+      g_proactive_persist_pending = true;
+      up_irq_restore(flags);
+      return;
+    }
+  g_proactive_persist_busy = true;
+  g_proactive_persist_pending = false;
+  up_irq_restore(flags);
+
+  work = calloc(1, sizeof(*work));
+  if (work == NULL)
+    {
+      ret = -ENOMEM;
+      goto fail;
+    }
+
+  ret = home_proactive_export_profile(work->data, sizeof(work->data),
+                                      &work->length);
+  if (ret < 0)
+    {
+      free(work);
+      work = NULL;
+      goto fail;
+    }
+
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, PROACTIVE_THREAD_STACK);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+  pthread_attr_setschedpolicy(&attr, SCHED_RR);
+  memset(&param, 0, sizeof(param));
+  param.sched_priority = 45;
+  pthread_attr_setschedparam(&attr, &param);
+  ret = pthread_create(&thread, &attr, proactive_persist_worker, work);
+  pthread_attr_destroy(&attr);
+  if (ret != 0)
+    {
+      free(work);
+      goto fail;
+    }
+  return;
+
+fail:
+  flags = up_irq_save();
+  g_proactive_persist_busy = false;
+  g_proactive_persist_pending = true;
+  g_proactive_persist_retry_at =
+    lv_tick_get() + PROACTIVE_PERSIST_RETRY_MS;
+  up_irq_restore(flags);
+  syslog(LOG_WARNING,
+         "[HOME][AGENT] profile worker start failed ret=%d\n", ret);
+}
+
+static bool proactive_persist_retry_ready(void)
+{
+  irqstate_t flags;
+  bool ready;
+
+  flags = up_irq_save();
+  ready = g_proactive_persist_pending && !g_proactive_persist_busy &&
+          (int32_t)(lv_tick_get() - g_proactive_persist_retry_at) >= 0;
+  up_irq_restore(flags);
+  return ready;
+}
+
+static void load_proactive_profile(void)
+{
+  uint8_t data[PROACTIVE_PROFILE_SIZE];
+  size_t length = 0;
+  int ret;
+
+  home_proactive_initialize();
+  ret = board_agent_persist_read(data, sizeof(data), &length);
+  if (ret == 0)
+    {
+      ret = home_proactive_import_profile(data, length);
+    }
+
+  syslog(LOG_INFO, "[HOME][AGENT] profile %s ret=%d bytes=%u\n",
+         ret == 0 ? "restored" : "cold-start", ret,
+         (unsigned int)length);
+}
+
+static bool text_contains(const char *text, const char *needle)
+{
+  return text != NULL && needle != NULL && strstr(text, needle) != NULL;
+}
+
+static void update_proactive_context(void)
+{
+  struct home_proactive_context_s context;
+  bool target_is_living_room = false;
+  time_t now = time(NULL);
+  struct tm local_time;
+  unsigned int index;
+
+  memset(&context, 0, sizeof(context));
+  context.network_online = g_network_state == NETWORK_ONLINE;
+  if (now >= TIME_VALID_EPOCH)
+    {
+      context.clock_valid = true;
+      now += 8 * 60 * 60;
+      context.day_ordinal = (uint32_t)(now / (24 * 60 * 60));
+      gmtime_r(&now, &local_time);
+      context.minute_of_day = local_time.tm_hour * 60 + local_time.tm_min;
+    }
+  else
+    {
+      context.day_ordinal = 1;
+      context.minute_of_day = 23 * 60 + 10;
+    }
+
+  for (index = 0; index < g_family_model.device_count; index++)
+    {
+      const struct home_panel_device_s *device =
+        &g_family_model.devices[index];
+      bool is_light = text_contains(device->type, "light") ||
+                      text_contains(device->model, ".light.") ||
+                      text_contains(device->name, "灯");
+      bool is_air_conditioner =
+        text_contains(device->type, "air-conditioner") ||
+        text_contains(device->model, "aircondition") ||
+        text_contains(device->name, "空调");
+
+      if (is_air_conditioner && device->has_power && device->power)
+        {
+          context.air_conditioner_on = true;
+        }
+
+      if (!is_light || !device->has_power || !device->power)
+        {
+          continue;
+        }
+
+      context.lights_on++;
+      if (device->online && device->power_writable &&
+          (!context.target_available ||
+           (!target_is_living_room && strcmp(device->room, "客厅") == 0)))
+        {
+          context.target_available = true;
+          target_is_living_room = strcmp(device->room, "客厅") == 0;
+          snprintf(context.target_did, sizeof(context.target_did), "%s",
+                   device->did);
+          snprintf(context.target_name, sizeof(context.target_name), "%s",
+                   device->name);
+          context.target_siid = device->power_siid;
+          context.target_piid = device->power_piid;
+        }
+    }
+
+  home_proactive_set_context(&context);
+}
+
+struct proactive_action_target_s
+{
+  const struct home_panel_device_s *device;
+  const struct home_panel_control_s *control;
+  int current_value;
+  bool available;
+  bool already_satisfied;
+};
+
+static bool proactive_resolve_action(
+  const struct home_proactive_snapshot_s *snapshot,
+  struct proactive_action_target_s *target)
+{
+  unsigned int index;
+
+  memset(target, 0, sizeof(*target));
+  if (snapshot->candidate_kind == HOME_PROACTIVE_CANDIDATE_SLEEP)
+    {
+      return false;
+    }
+
+  for (index = 0; index < g_family_model.device_count; index++)
+    {
+      const struct home_panel_device_s *device =
+        &g_family_model.devices[index];
+      const struct home_panel_control_s *control;
+
+      if (proactive_hash_device_id(device->did) !=
+          snapshot->action_device_hash)
+        {
+          continue;
+        }
+
+      control = proactive_find_control(device, snapshot->action_siid,
+                                       snapshot->action_piid);
+      if (control == NULL || !control->has_value || !device->online ||
+          !proactive_safe_action_device(device) ||
+          (snapshot->action_is_boolean &&
+           control->type != HOME_PANEL_CONTROL_BOOLEAN) ||
+          (!snapshot->action_is_boolean &&
+           control->type != HOME_PANEL_CONTROL_NUMBER))
+        {
+          return false;
+        }
+
+      target->device = device;
+      target->control = control;
+      target->current_value =
+        control->type == HOME_PANEL_CONTROL_BOOLEAN ?
+          (control->boolean_value ? 1 : 0) : control->value;
+      target->available = true;
+      target->already_satisfied =
+        target->current_value == snapshot->action_value;
+      return true;
+    }
+
+  return false;
+}
+
+static int proactive_request_action(
+  const struct home_proactive_snapshot_s *snapshot,
+  const struct proactive_action_target_s *target,
+  bool automation)
+{
+  int ret;
+
+  if (!target->available || target->already_satisfied)
+    {
+      return target->already_satisfied ? 1 : -ENODEV;
+    }
+
+  if (snapshot->action_is_boolean)
+    {
+      ret = home_panel_mijia_request_bool_property(
+        target->device->did, target->device->name,
+        target->control->name, target->control->siid,
+        target->control->piid, snapshot->action_value != 0);
+    }
+  else
+    {
+      if (!target->control->has_range ||
+          snapshot->action_value < target->control->minimum ||
+          snapshot->action_value > target->control->maximum)
+        {
+          return -ERANGE;
+        }
+      ret = home_panel_mijia_request_number_property(
+        target->device->did, target->device->name,
+        target->control->name, target->control->siid,
+        target->control->piid, snapshot->action_value);
+    }
+
+  if (ret == 0)
+    {
+      memset(&g_proactive_command, 0, sizeof(g_proactive_command));
+      g_proactive_command.device_hash = snapshot->action_device_hash;
+      g_proactive_command.decision_key = snapshot->decision_key;
+      g_proactive_command.deadline_ms = lv_tick_get() + 15000u;
+      g_proactive_command.siid = snapshot->action_siid;
+      g_proactive_command.piid = snapshot->action_piid;
+      g_proactive_command.value = snapshot->action_value;
+      g_proactive_command.kind =
+        snapshot->action_is_boolean ? HOME_PROACTIVE_EVENT_BOOLEAN :
+                                      HOME_PROACTIVE_EVENT_NUMBER;
+      g_proactive_command.active = true;
+      g_proactive_command.automation = automation;
+    }
+
+  return ret;
+}
+
+static lv_obj_t *make_proactive_metric(lv_obj_t *parent, const char *name,
+                                       int x, lv_obj_t **value_label)
+{
+  lv_obj_t *panel = lv_obj_create(parent);
+
+  lv_obj_set_pos(panel, x, 92);
+  lv_obj_set_size(panel, 182, 82);
+  style_panel(panel);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+  make_label(panel, name, 14, 10, lv_color_hex(COLOR_MUTED),
+             home_panel_font_get());
+  *value_label = make_label(panel, "--", 14, 40,
+                            lv_color_hex(COLOR_TEXT),
+                            home_panel_font_get());
+  return panel;
+}
+
+static uint64_t proactive_monotonic_ms(void)
+{
+  struct timespec value;
+
+  if (clock_gettime(CLOCK_MONOTONIC, &value) < 0)
+    {
+      return 0;
+    }
+  return (uint64_t)value.tv_sec * 1000u +
+         (uint64_t)value.tv_nsec / 1000000u;
+}
+
+static bool proactive_agent_matches(
+  const struct home_panel_agent_snapshot_s *agent,
+  const struct home_proactive_snapshot_s *snapshot)
+{
+  uint64_t now;
+
+  if (agent->context_revision != snapshot->decision_key ||
+      agent->state == HOME_PANEL_AGENT_IDLE)
+    {
+      return false;
+    }
+  if (!snapshot->network_online &&
+      (agent->state == HOME_PANEL_AGENT_PENDING ||
+       agent->state == HOME_PANEL_AGENT_CLOUD_READY))
+    {
+      return false;
+    }
+  now = proactive_monotonic_ms();
+  return agent->valid_until_monotonic_ms != 0 &&
+         (now == 0 || now < agent->valid_until_monotonic_ms);
+}
+
+static void update_proactive_widgets(void)
+{
+  struct home_proactive_snapshot_s snapshot;
+  struct home_panel_agent_snapshot_s agent;
+  struct proactive_action_target_s target;
+  char text[384];
+  bool actionable;
+  bool agent_matches;
+  bool cloud_blocks;
+  bool generic;
+  bool target_available;
+  bool visible;
+
+  home_proactive_get_snapshot(&snapshot);
+  home_panel_mijia_get_agent_snapshot(&agent);
+  if (g_proactive_mode_label == NULL)
+    {
+      return;
+    }
+
+  g_displayed_proactive_revision = snapshot.revision;
+  g_displayed_agent_revision = agent.revision;
+  generic = snapshot.candidate_kind != HOME_PROACTIVE_CANDIDATE_SLEEP;
+  target_available = generic ?
+    proactive_resolve_action(&snapshot, &target) :
+    snapshot.target_available;
+  agent_matches = proactive_agent_matches(&agent, &snapshot);
+  cloud_blocks = agent_matches &&
+                 (agent.state == HOME_PANEL_AGENT_PENDING ||
+                  (agent.state == HOME_PANEL_AGENT_CLOUD_READY &&
+                   agent.decision != HOME_PANEL_AGENT_PROPOSE));
+  actionable = snapshot.suggestion_available && target_available &&
+               !cloud_blocks;
+  set_label_text_if_changed(
+    g_proactive_mode_label,
+    snapshot.mode == HOME_PROACTIVE_REAL ?
+      (agent_matches && agent.state == HOME_PANEL_AGENT_CLOUD_READY ?
+        "真实运行｜云端深度分析" :
+        (snapshot.profile_learned || snapshot.routine_count > 0) ?
+          "真实运行｜本地持续学习" : "真实运行｜规则冷启动") :
+    snapshot.mode == HOME_PROACTIVE_REPLAY ?
+      "演示模式｜模拟历史数据" : "演示模式｜第 8 天");
+  lv_obj_set_style_text_color(
+    g_proactive_mode_label,
+    lv_color_hex(snapshot.mode == HOME_PROACTIVE_REAL ? COLOR_GREEN :
+                                                        COLOR_ORANGE), 0);
+
+  snprintf(text, sizeof(text), "%u 天", snapshot.history_days);
+  set_label_text_if_changed(g_proactive_history_label, text);
+  snprintf(text, sizeof(text), "%02u:%02u",
+           snapshot.preferred_hour, snapshot.preferred_minute);
+  set_label_text_if_changed(g_proactive_time_label, text);
+  snprintf(text, sizeof(text), "%u%%",
+           agent_matches && agent.state != HOME_PANEL_AGENT_PENDING ?
+             agent.adjusted_confidence : snapshot.confidence);
+  set_label_text_if_changed(g_proactive_confidence_label, text);
+
+  if (snapshot.mode == HOME_PROACTIVE_REPLAY)
+    {
+      snprintf(text, sizeof(text), "正在回放：第 %u / 7 天",
+               snapshot.replay_day);
+    }
+  else if (snapshot.mode == HOME_PROACTIVE_DEMO_READY)
+    {
+      snprintf(text, sizeof(text),
+               "已学习 %u 次反馈：接受 %u，忽略 %u",
+               snapshot.feedback_count, snapshot.accepted_count,
+               snapshot.ignored_count);
+    }
+  else
+    {
+      snprintf(text, sizeof(text),
+               "真实画像：%u 条习惯，%u 次观察，%u 条自动化",
+               snapshot.routine_count, snapshot.routine_observations,
+               snapshot.automation_count);
+    }
+  set_label_text_if_changed(g_proactive_progress_label, text);
+
+  visible = snapshot.suggestion_available;
+  set_label_text_if_changed(
+    g_proactive_suggestion_title,
+    !visible ? "暂无主动建议" :
+    agent_matches && agent.state == HOME_PANEL_AGENT_PENDING ?
+      "主动建议｜云端分析中" :
+    agent_matches && agent.state == HOME_PANEL_AGENT_CLOUD_READY &&
+      agent.decision == HOME_PANEL_AGENT_SUPPRESS ?
+      "云端建议暂缓" :
+    agent_matches && agent.state == HOME_PANEL_AGENT_CLOUD_READY &&
+      agent.decision == HOME_PANEL_AGENT_DEFER ?
+      "云端建议继续观察" :
+    snapshot.candidate_kind == HOME_PROACTIVE_CANDIDATE_EVENT_ROUTINE ?
+      "设备联动建议" :
+    snapshot.candidate_kind == HOME_PROACTIVE_CANDIDATE_TIME_ROUTINE ?
+      "时间习惯建议" : "睡眠准备");
+  if (visible)
+    {
+      if (agent_matches && agent.summary[0] != '\0')
+        {
+          snprintf(text, sizeof(text), "%s%s%s",
+                   agent.summary,
+                   agent.reasons[0] != '\0' ? "；" : "",
+                   agent.reasons);
+        }
+      else if (generic)
+        {
+          snprintf(text, sizeof(text),
+                   "本地已观察到相似行为 %u 次；预测触发时间 %02u:%02u；"
+                   "当前置信度 %u%%。%s",
+                   snapshot.candidate_observations,
+                   snapshot.preferred_hour, snapshot.preferred_minute,
+                   snapshot.confidence,
+                   snapshot.candidate_kind ==
+                     HOME_PROACTIVE_CANDIDATE_EVENT_ROUTINE ?
+                     "本次由真实设备状态变化触发。" :
+                     "本次由长期时间规律触发。");
+        }
+      else
+        {
+          snprintf(text, sizeof(text),
+                   "触发依据：当前处于常用睡眠时段；%u 盏灯仍开启；"
+                   "相似情境接受率 %u%%。",
+                   snapshot.lights_on,
+                   snapshot.feedback_count == 0 ? 0 :
+                   snapshot.accepted_count * 100 /
+                   snapshot.feedback_count);
+        }
+      set_label_text_if_changed(g_proactive_reason_label, text);
+      if (cloud_blocks)
+        {
+          snprintf(text, sizeof(text),
+                   agent.state == HOME_PANEL_AGENT_PENDING ?
+                     "等待云端决策；超时后自动切换本地算法" :
+                     "本次不下发设备操作，板端继续观察状态");
+        }
+      else if (generic && target_available)
+        {
+          if (target.already_satisfied)
+            {
+              snprintf(text, sizeof(text), "%s 已处于建议状态",
+                       target.device->name);
+            }
+          else if (snapshot.action_is_boolean)
+            {
+              snprintf(text, sizeof(text), "建议将 %s 设置为%s",
+                       target.device->name,
+                       snapshot.action_value != 0 ? "开启" : "关闭");
+            }
+          else
+            {
+              snprintf(text, sizeof(text), "建议将 %s 的 %s 调整为 %d",
+                       target.device->name, target.control->name,
+                       snapshot.action_value);
+            }
+        }
+      else if (generic)
+        {
+          snprintf(text, sizeof(text),
+                   "目标设备当前离线、已删除或属性已不可写，本次不会执行");
+        }
+      else
+        {
+          snprintf(text, sizeof(text), "建议关闭 %s%s",
+                   snapshot.target_available ? snapshot.target_name :
+                                               "当前灯光",
+                   snapshot.air_conditioner_on ? "，保留空调运行" : "");
+        }
+      set_label_text_if_changed(g_proactive_action_label, text);
+    }
+  else
+    {
+      set_label_text_if_changed(
+        g_proactive_reason_label,
+        snapshot.mode == HOME_PROACTIVE_REPLAY ?
+          "正在压缩回放七天事件，算法与真实运行使用同一条事件链。" :
+        !snapshot.clock_valid ?
+          "等待网络校时完成；时间无效时不会产生真实主动建议。" :
+          "系统会结合时间、设备状态和你的反馈生成建议。");
+      set_label_text_if_changed(g_proactive_action_label,
+                                "不会未经确认控制家庭设备");
+    }
+
+  if (g_proactive_accept_button != NULL)
+    {
+      if (actionable)
+        {
+          lv_obj_remove_flag(g_proactive_accept_button,
+                             LV_OBJ_FLAG_HIDDEN);
+        }
+      else
+        {
+          lv_obj_add_flag(g_proactive_accept_button, LV_OBJ_FLAG_HIDDEN);
+        }
+      if (visible)
+        {
+          lv_obj_remove_flag(g_proactive_ignore_button,
+                             LV_OBJ_FLAG_HIDDEN);
+          lv_obj_remove_flag(g_proactive_less_button, LV_OBJ_FLAG_HIDDEN);
+        }
+      else
+        {
+          lv_obj_add_flag(g_proactive_ignore_button, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(g_proactive_less_button, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+  if (g_proactive_automation_button != NULL)
+    {
+      if (actionable && generic && !snapshot.automation_enabled)
+        {
+          lv_obj_remove_flag(g_proactive_automation_button,
+                             LV_OBJ_FLAG_HIDDEN);
+        }
+      else
+        {
+          lv_obj_add_flag(g_proactive_automation_button,
+                          LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+  if (g_proactive_return_button != NULL)
+    {
+      if (snapshot.mode == HOME_PROACTIVE_REAL)
+        {
+          lv_obj_add_flag(g_proactive_return_button, LV_OBJ_FLAG_HIDDEN);
+        }
+      else
+        {
+          lv_obj_remove_flag(g_proactive_return_button,
+                             LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+  if (g_proactive_reset_button != NULL)
+    {
+      if (snapshot.mode == HOME_PROACTIVE_REAL)
+        {
+          lv_obj_remove_flag(g_proactive_reset_button,
+                             LV_OBJ_FLAG_HIDDEN);
+        }
+      else
+        {
+          lv_obj_add_flag(g_proactive_reset_button, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+static void proactive_replay_clicked(lv_event_t *event)
+{
+  (void)event;
+  home_proactive_start_replay(lv_tick_get());
+  set_label_text_if_changed(g_proactive_feedback_label,
+                            "演示数据不会写入真实用户画像");
+  update_proactive_widgets();
+}
+
+static void proactive_reset_clicked(lv_event_t *event)
+{
+  struct home_proactive_snapshot_s snapshot;
+
+  (void)event;
+  home_proactive_get_snapshot(&snapshot);
+  if (snapshot.mode != HOME_PROACTIVE_REAL)
+    {
+      set_label_text_if_changed(g_proactive_feedback_label,
+                                "请先返回真实模式再重置画像");
+      return;
+    }
+  home_proactive_reset();
+  update_proactive_context();
+  schedule_proactive_persist();
+  set_label_text_if_changed(g_proactive_feedback_label,
+                            "真实用户画像已重置");
+  update_proactive_widgets();
+}
+
+static void proactive_return_clicked(lv_event_t *event)
+{
+  (void)event;
+  home_proactive_stop_replay();
+  update_proactive_context();
+  set_label_text_if_changed(g_proactive_feedback_label,
+                            "已恢复回放前的真实画像");
+  update_proactive_widgets();
+}
+
+static void proactive_feedback_clicked(lv_event_t *event)
+{
+  enum home_proactive_feedback_e feedback =
+    (enum home_proactive_feedback_e)(uintptr_t)lv_event_get_user_data(event);
+  struct home_panel_agent_snapshot_s agent;
+  struct home_proactive_snapshot_s before;
+  struct proactive_action_target_s target;
+  bool generic;
+  int ret = 0;
+
+  home_proactive_get_snapshot(&before);
+  home_panel_mijia_get_agent_snapshot(&agent);
+  generic = before.candidate_kind != HOME_PROACTIVE_CANDIDATE_SLEEP;
+  if (feedback == HOME_PROACTIVE_ENABLE_AUTOMATION && !generic)
+    {
+      return;
+    }
+  if (feedback == HOME_PROACTIVE_ACCEPT ||
+      feedback == HOME_PROACTIVE_ENABLE_AUTOMATION)
+    {
+      if (proactive_agent_matches(&agent, &before) &&
+          (agent.state == HOME_PANEL_AGENT_PENDING ||
+           (agent.state == HOME_PANEL_AGENT_CLOUD_READY &&
+            agent.decision != HOME_PANEL_AGENT_PROPOSE)))
+        {
+          set_label_text_if_changed(
+            g_proactive_feedback_label,
+            agent.state == HOME_PANEL_AGENT_PENDING ?
+              "云端仍在分析，请稍候；失败后会自动切换本地算法" :
+              "云端建议本次暂缓，未执行设备操作");
+          return;
+        }
+      if (generic)
+        {
+          if (!proactive_resolve_action(&before, &target))
+            {
+              set_label_text_if_changed(
+                g_proactive_feedback_label,
+                "目标设备离线或属性已不可写，本次未执行");
+              return;
+            }
+          ret = proactive_request_action(&before, &target, false);
+        }
+      else if (!before.target_available)
+        {
+          return;
+        }
+      else
+        {
+          ret = home_panel_mijia_request_bool_property(
+            before.target_did, before.target_name, "on",
+            before.target_siid, before.target_piid, false);
+        }
+      if (ret < 0)
+        {
+          set_label_text_if_changed(g_proactive_feedback_label,
+                                    ret == -EBUSY ?
+                                    "请等待上一条设备指令完成" :
+                                    "设备指令发送失败");
+          return;
+        }
+    }
+
+  home_proactive_feedback(feedback);
+  if (before.mode == HOME_PROACTIVE_REAL)
+    {
+      schedule_proactive_persist();
+    }
+  set_label_text_if_changed(
+    g_proactive_feedback_label,
+    feedback == HOME_PROACTIVE_ENABLE_AUTOMATION ?
+      "已执行本次建议，并建立本地断网自动化" :
+    feedback == HOME_PROACTIVE_ACCEPT ?
+      (ret == 1 ? "设备已处于建议状态，已记录本次选择" :
+                  "指令已发送，等待设备状态确认") :
+    feedback == HOME_PROACTIVE_IGNORE_TODAY ? "今天已忽略，已记录反馈" :
+                                             "已降低提醒频率");
+  update_proactive_widgets();
+}
+
+static void process_proactive_automation(void)
+{
+  struct home_proactive_snapshot_s snapshot;
+  struct proactive_action_target_s target;
+  uint32_t now_ms = lv_tick_get();
+  int ret;
+
+  if (g_proactive_command.active &&
+      (int32_t)(now_ms - g_proactive_command.deadline_ms) > 0)
+    {
+      if (g_proactive_command.automation)
+        {
+          home_proactive_automation_result(false);
+          schedule_proactive_persist();
+          syslog(LOG_WARNING,
+                 "[HOME][AGENT] automation confirmation timeout key=%u\n",
+                 (unsigned int)g_proactive_command.decision_key);
+        }
+      memset(&g_proactive_command, 0, sizeof(g_proactive_command));
+    }
+
+  home_proactive_get_snapshot(&snapshot);
+  if (!snapshot.automation_due ||
+      snapshot.candidate_kind == HOME_PROACTIVE_CANDIDATE_SLEEP ||
+      !proactive_resolve_action(&snapshot, &target))
+    {
+      return;
+    }
+
+  if (!home_proactive_claim_automation(snapshot.decision_key))
+    {
+      return;
+    }
+
+  ret = proactive_request_action(&snapshot, &target, true);
+  if (ret == 1)
+    {
+      home_proactive_automation_result(true);
+      schedule_proactive_persist();
+      syslog(LOG_INFO,
+             "[HOME][AGENT] automation already satisfied key=%u\n",
+             (unsigned int)snapshot.decision_key);
+    }
+  else if (ret < 0)
+    {
+      home_proactive_automation_result(false);
+      schedule_proactive_persist();
+      syslog(LOG_WARNING,
+             "[HOME][AGENT] automation send failed key=%u ret=%d\n",
+             (unsigned int)snapshot.decision_key, ret);
+    }
+  else
+    {
+      syslog(LOG_INFO,
+             "[HOME][AGENT] automation sent key=%u action=%u/%u\n",
+             (unsigned int)snapshot.decision_key,
+             snapshot.action_siid, snapshot.action_piid);
+    }
+}
+
+static void request_proactive_cloud_analysis(
+  const struct home_proactive_snapshot_s *snapshot,
+  enum home_panel_mijia_state_e mijia_state)
+{
+  struct home_panel_agent_request_s request;
+  struct home_panel_agent_snapshot_s current;
+  struct proactive_action_target_s target;
+  bool request_current = false;
+  bool target_available;
+  int ret;
+
+  if (snapshot != NULL &&
+      g_requested_proactive_key == snapshot->decision_key)
+    {
+      home_panel_mijia_get_agent_snapshot(&current);
+      request_current = proactive_agent_matches(&current, snapshot);
+    }
+
+  target_available =
+    snapshot != NULL &&
+    snapshot->candidate_kind != HOME_PROACTIVE_CANDIDATE_SLEEP ?
+      proactive_resolve_action(snapshot, &target) :
+      snapshot != NULL && snapshot->target_available;
+
+  if (snapshot == NULL || !snapshot->suggestion_available ||
+      snapshot->automation_enabled ||
+      !snapshot->network_online || !target_available ||
+      mijia_state != HOME_PANEL_MIJIA_AUTHENTICATED ||
+      request_current)
+    {
+      return;
+    }
+
+  memset(&request, 0, sizeof(request));
+  request.context_revision = snapshot->decision_key;
+  request.routine_id = snapshot->routine_id;
+  request.source = (unsigned int)snapshot->source;
+  request.candidate_kind = (unsigned int)snapshot->candidate_kind;
+  request.minute_of_day = snapshot->current_minute_of_day;
+  request.local_confidence = snapshot->confidence;
+  request.routine_observations = snapshot->candidate_observations;
+  request.routine_accepted = snapshot->candidate_accepted;
+  request.routine_rejected = snapshot->candidate_rejected;
+  request.history_days = snapshot->history_days;
+  request.feedback_count = snapshot->feedback_count;
+  request.accepted_count = snapshot->accepted_count;
+  request.ignored_count = snapshot->ignored_count;
+  request.lights_on = snapshot->lights_on;
+  request.local_eligible = snapshot->suggestion_available &&
+                           target_available;
+  request.automation_enabled = snapshot->automation_enabled;
+  request.air_conditioner_on = snapshot->air_conditioner_on;
+  request.network_online = snapshot->network_online;
+  request.demo = snapshot->mode != HOME_PROACTIVE_REAL;
+  ret = home_panel_mijia_request_agent_analysis(&request);
+  if (ret == 0)
+    {
+      g_requested_proactive_key = snapshot->decision_key;
+      syslog(LOG_INFO,
+             "[HOME][AGENT] cloud analysis requested key=%u source=%u\n",
+             (unsigned int)snapshot->decision_key,
+             (unsigned int)snapshot->source);
+    }
+}
+
+static void request_proactive_cloud_learning(
+  const struct home_proactive_snapshot_s *snapshot,
+  enum home_panel_mijia_state_e mijia_state)
+{
+  struct home_panel_agent_learning_request_s request;
+  int ret;
+
+  if (snapshot == NULL ||
+      snapshot->mode != HOME_PROACTIVE_REAL ||
+      snapshot->learning_revision == 0 ||
+      snapshot->learning_routine_id == 0 ||
+      snapshot->learning_observations == 0 ||
+      !snapshot->network_online ||
+      mijia_state != HOME_PANEL_MIJIA_AUTHENTICATED)
+    {
+      return;
+    }
+
+  memset(&request, 0, sizeof(request));
+  request.profile_revision = snapshot->learning_revision;
+  request.routine_id = snapshot->learning_routine_id;
+  request.routine_kind = (unsigned int)snapshot->learning_kind;
+  request.update_kind =
+    (unsigned int)snapshot->learning_update_kind;
+  request.observation_count = snapshot->learning_observations;
+  request.accepted_count = snapshot->learning_accepted;
+  request.rejected_count = snapshot->learning_rejected;
+  request.confidence = snapshot->learning_confidence;
+  request.mean_minute_of_day = snapshot->learning_mean_minute;
+  request.mean_deviation_minutes =
+    snapshot->learning_deviation_minutes;
+  request.mean_delay_seconds = snapshot->learning_delay_seconds;
+  request.automation_enabled =
+    snapshot->learning_automation_enabled;
+  ret = home_panel_mijia_request_agent_learning(&request);
+  if (ret == -EALREADY)
+    {
+      if (home_proactive_ack_learning(snapshot->learning_revision,
+                                      snapshot->learning_routine_id))
+        {
+          syslog(LOG_INFO,
+                 "[HOME][AGENT] learning acknowledged revision=%u "
+                 "routine=%u\n",
+                 (unsigned int)snapshot->learning_revision,
+                 (unsigned int)snapshot->learning_routine_id);
+        }
+    }
+}
+
+static void create_proactive_page(void)
+{
+  lv_obj_t *panel;
+  lv_obj_t *button;
+
+  make_label(g_content, "主动智能", 30, 22, lv_color_hex(COLOR_TEXT),
+             home_panel_font_get());
+  make_label(g_content, "板端学习、可解释建议与安全确认", 30, 54,
+             lv_color_hex(COLOR_MUTED), home_panel_font_get());
+  g_proactive_mode_label = make_label(g_content, "真实运行", 610, 28,
+                                      lv_color_hex(COLOR_GREEN),
+                                      home_panel_font_get());
+
+  make_proactive_metric(g_content, "有效历史", 30,
+                        &g_proactive_history_label);
+  make_proactive_metric(g_content, "习惯参考时间", 226,
+                        &g_proactive_time_label);
+  make_proactive_metric(g_content, "建议置信度", 422,
+                        &g_proactive_confidence_label);
+  g_proactive_progress_label = make_label(g_content, "真实画像：0 次反馈",
+                                          30, 184,
+                                          lv_color_hex(COLOR_MUTED),
+                                          home_panel_font_get());
+
+  button = make_action_button(g_content, "回放 7 天", 628, 92, 192);
+  lv_obj_remove_event_cb(button, action_clicked);
+  lv_obj_add_event_cb(button, proactive_replay_clicked,
+                      LV_EVENT_CLICKED, NULL);
+  g_proactive_return_button = make_action_button(
+    g_content, "返回真实", 628, 154, 92);
+  style_secondary_action(g_proactive_return_button);
+  lv_obj_remove_event_cb(g_proactive_return_button, action_clicked);
+  lv_obj_add_event_cb(g_proactive_return_button, proactive_return_clicked,
+                      LV_EVENT_CLICKED, NULL);
+  g_proactive_reset_button = make_action_button(
+    g_content, "重置画像", 728, 154, 92);
+  style_secondary_action(g_proactive_reset_button);
+  lv_obj_remove_event_cb(g_proactive_reset_button, action_clicked);
+  lv_obj_add_event_cb(g_proactive_reset_button, proactive_reset_clicked,
+                      LV_EVENT_CLICKED, NULL);
+
+  panel = lv_obj_create(g_content);
+  lv_obj_set_pos(panel, 30, 220);
+  lv_obj_set_size(panel, 790, 206);
+  style_panel(panel);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+  g_proactive_suggestion_title = make_label(
+    panel, "暂无主动建议", 20, 14, lv_color_hex(COLOR_TEXT),
+    home_panel_font_get());
+  g_proactive_reason_label = make_label(
+    panel, "系统会结合时间、设备状态和你的反馈生成建议。",
+    20, 50, lv_color_hex(COLOR_MUTED), home_panel_font_get());
+  lv_obj_set_width(g_proactive_reason_label, 742);
+  lv_label_set_long_mode(g_proactive_reason_label, LV_LABEL_LONG_WRAP);
+  g_proactive_action_label = make_label(
+    panel, "不会未经确认控制家庭设备", 20, 112,
+    lv_color_hex(COLOR_BLUE), home_panel_font_get());
+
+  g_proactive_accept_button = make_action_button(
+    g_content, "仅本次执行", 30, 444, 136);
+  lv_obj_remove_event_cb(g_proactive_accept_button, action_clicked);
+  lv_obj_add_event_cb(g_proactive_accept_button, proactive_feedback_clicked,
+                      LV_EVENT_CLICKED,
+                      (void *)(uintptr_t)HOME_PROACTIVE_ACCEPT);
+  g_proactive_automation_button = make_action_button(
+    g_content, "设为自动", 176, 444, 136);
+  lv_obj_remove_event_cb(g_proactive_automation_button, action_clicked);
+  lv_obj_add_event_cb(g_proactive_automation_button,
+                      proactive_feedback_clicked, LV_EVENT_CLICKED,
+                      (void *)(uintptr_t)
+                        HOME_PROACTIVE_ENABLE_AUTOMATION);
+  g_proactive_ignore_button = make_action_button(
+    g_content, "仅今天忽略", 322, 444, 136);
+  style_secondary_action(g_proactive_ignore_button);
+  lv_obj_remove_event_cb(g_proactive_ignore_button, action_clicked);
+  lv_obj_add_event_cb(g_proactive_ignore_button, proactive_feedback_clicked,
+                      LV_EVENT_CLICKED,
+                      (void *)(uintptr_t)HOME_PROACTIVE_IGNORE_TODAY);
+  g_proactive_less_button = make_action_button(
+    g_content, "以后少提醒", 468, 444, 136);
+  style_secondary_action(g_proactive_less_button);
+  lv_obj_remove_event_cb(g_proactive_less_button, action_clicked);
+  lv_obj_add_event_cb(g_proactive_less_button, proactive_feedback_clicked,
+                      LV_EVENT_CLICKED,
+                      (void *)(uintptr_t)HOME_PROACTIVE_LESS_OFTEN);
+  g_proactive_feedback_label = make_label(
+    g_content, "自动化仅由本机确认后启用", 620, 452,
+    lv_color_hex(COLOR_MUTED), home_panel_font_get());
+  lv_obj_set_width(g_proactive_feedback_label, 200);
+  lv_label_set_long_mode(g_proactive_feedback_label, LV_LABEL_LONG_WRAP);
+  update_proactive_widgets();
+  g_status_label = g_proactive_feedback_label;
+}
+
 static void create_settings_page(void)
 {
   lv_obj_t *panel;
@@ -2675,9 +3801,7 @@ static void create_settings_page(void)
   panel = lv_obj_create(g_content);
   lv_obj_set_pos(panel, 30, 104);
   lv_obj_set_size(panel, 790, 318);
-  lv_obj_set_style_radius(panel, UI_RADIUS, 0);
-  lv_obj_set_style_bg_color(panel, lv_color_hex(COLOR_SURFACE), 0);
-  lv_obj_set_style_border_color(panel, lv_color_hex(0x2c323a), 0);
+  style_panel(panel);
   lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
   g_settings_network_label = make_info_row(panel, "有线网络",
                                             "有线网络未连接", 24,
@@ -2729,10 +3853,8 @@ static void show_page(unsigned int page)
 
   if (previous_page != page)
     {
-      lv_obj_set_style_bg_color(g_nav_buttons[previous_page],
-                                lv_color_hex(COLOR_BG), 0);
-      lv_obj_set_style_bg_color(g_nav_buttons[page],
-                                lv_color_hex(COLOR_SURFACE_2), 0);
+      set_nav_selected(previous_page, false);
+      set_nav_selected(page, true);
       if (g_pages[previous_page] != NULL)
         {
           lv_obj_add_flag(g_pages[previous_page], LV_OBJ_FLAG_HIDDEN);
@@ -2740,8 +3862,7 @@ static void show_page(unsigned int page)
     }
   else
     {
-      lv_obj_set_style_bg_color(g_nav_buttons[page],
-                                lv_color_hex(COLOR_SURFACE_2), 0);
+      set_nav_selected(page, true);
     }
 
   if (g_pages[page] != NULL)
@@ -2757,6 +3878,10 @@ static void show_page(unsigned int page)
       g_settings_probe_label = g_page_settings_probe_labels[page];
       g_settings_account_label = g_page_settings_account_labels[page];
       g_home_summary_label = g_page_home_summary_labels[page];
+      if (page == PROACTIVE_PAGE)
+        {
+          update_proactive_widgets();
+        }
       home_panel_mijia_get_snapshot(&snapshot);
       apply_mijia_snapshot(&snapshot);
       syslog(LOG_INFO, "[HOME][UI] page-switch page=%u model=%u\n",
@@ -2801,6 +3926,10 @@ static void show_page(unsigned int page)
   else if (page == 2)
     {
       create_scenes_page();
+    }
+  else if (page == PROACTIVE_PAGE)
+    {
+      create_proactive_page();
     }
   else
     {
@@ -2859,6 +3988,25 @@ static void delete_page(unsigned int page)
       g_room_device_host = NULL;
       g_room_detail_host = NULL;
       reset_detail_bindings();
+    }
+
+  if (page == PROACTIVE_PAGE)
+    {
+      g_proactive_mode_label = NULL;
+      g_proactive_history_label = NULL;
+      g_proactive_time_label = NULL;
+      g_proactive_confidence_label = NULL;
+      g_proactive_progress_label = NULL;
+      g_proactive_suggestion_title = NULL;
+      g_proactive_reason_label = NULL;
+      g_proactive_action_label = NULL;
+      g_proactive_feedback_label = NULL;
+      g_proactive_accept_button = NULL;
+      g_proactive_automation_button = NULL;
+      g_proactive_ignore_button = NULL;
+      g_proactive_less_button = NULL;
+      g_proactive_return_button = NULL;
+      g_proactive_reset_button = NULL;
     }
 
   if (g_current_page == page)
@@ -3005,9 +4153,7 @@ static void update_device_binding(
 
   if (checked != current_checked)
     {
-      lv_obj_set_style_bg_color(
-        binding->button,
-        lv_color_hex(checked ? COLOR_GREEN : COLOR_SURFACE_2), 0);
+      style_toggle(binding->button, checked);
       if (checked)
         {
           lv_obj_add_state(binding->button, LV_STATE_CHECKED);
@@ -3053,10 +4199,7 @@ static void update_control_binding(
                                   "状态未知");
       if (checked != property->boolean_value)
         {
-          lv_obj_set_style_bg_color(
-            binding->control,
-            lv_color_hex(property->boolean_value ? COLOR_GREEN :
-                                                    COLOR_SURFACE_2), 0);
+          style_toggle(binding->control, property->boolean_value);
           if (property->boolean_value)
             {
               lv_obj_add_state(binding->control, LV_STATE_CHECKED);
@@ -3194,79 +4337,333 @@ static void update_model_widgets(void)
     }
 }
 
-static int refresh_family_model(
-  const struct home_panel_mijia_family_snapshot_s *snapshot)
+static uint32_t proactive_hash_device_id(const char *did)
 {
-  struct home_panel_family_model_s *model;
+  const unsigned char *text = (const unsigned char *)did;
+  uint32_t hash = 2166136261u;
+
+  if (did == NULL)
+    {
+      return 0;
+    }
+
+  while (*text != '\0')
+    {
+      hash = (hash ^ *text++) * 16777619u;
+    }
+
+  return hash == 0 ? 1 : hash;
+}
+
+static const struct home_panel_device_s *proactive_find_device(
+  const struct home_panel_family_model_s *model, const char *did)
+{
+  unsigned int index;
+
+  if (model == NULL || did == NULL)
+    {
+      return NULL;
+    }
+
+  for (index = 0; index < model->device_count; index++)
+    {
+      if (strcmp(model->devices[index].did, did) == 0)
+        {
+          return &model->devices[index];
+        }
+    }
+
+  return NULL;
+}
+
+static const struct home_panel_observable_s *proactive_find_observable(
+  const struct home_panel_device_s *device, uint16_t siid, uint16_t piid)
+{
+  unsigned int index;
+
+  if (device == NULL)
+    {
+      return NULL;
+    }
+
+  for (index = 0; index < device->observable_count; index++)
+    {
+      if (device->observables[index].siid == siid &&
+          device->observables[index].piid == piid)
+        {
+          return &device->observables[index];
+        }
+    }
+
+  return NULL;
+}
+
+static const struct home_panel_control_s *proactive_find_control(
+  const struct home_panel_device_s *device, uint16_t siid, uint16_t piid)
+{
+  unsigned int index;
+
+  if (device == NULL)
+    {
+      return NULL;
+    }
+
+  for (index = 0; index < device->control_count; index++)
+    {
+      if (device->controls[index].siid == siid &&
+          device->controls[index].piid == piid)
+        {
+          return &device->controls[index];
+        }
+    }
+
+  return NULL;
+}
+
+static bool proactive_safe_action_device(
+  const struct home_panel_device_s *device)
+{
+  static const char *const blocked_types[] =
+  {
+    "camera", "lock", "cateye", "sensor", "alarm", "smoke", "gas"
+  };
+  unsigned int index;
+
+  if (device == NULL)
+    {
+      return false;
+    }
+
+  for (index = 0;
+       index < sizeof(blocked_types) / sizeof(blocked_types[0]); index++)
+    {
+      if (strstr(device->type, blocked_types[index]) != NULL ||
+          strstr(device->model, blocked_types[index]) != NULL)
+        {
+          return false;
+        }
+    }
+  return true;
+}
+
+static bool proactive_event_time(uint32_t *day_ordinal,
+                                  uint16_t *minute_of_day)
+{
+  struct tm local_time;
+  time_t now = time(NULL);
+
+  if (now < TIME_VALID_EPOCH)
+    {
+      return false;
+    }
+
+  now += 8 * 60 * 60;
+  *day_ordinal = (uint32_t)(now / (24 * 60 * 60));
+  gmtime_r(&now, &local_time);
+  *minute_of_day =
+    (uint16_t)(local_time.tm_hour * 60 + local_time.tm_min);
+  return true;
+}
+
+static bool proactive_command_matches(
+  const struct home_proactive_event_s *event)
+{
+  if (!g_proactive_command.active ||
+      (int32_t)(event->now_ms - g_proactive_command.deadline_ms) > 0 ||
+      event->device_hash != g_proactive_command.device_hash ||
+      event->siid != g_proactive_command.siid ||
+      event->piid != g_proactive_command.piid ||
+      event->kind != g_proactive_command.kind ||
+      event->value != g_proactive_command.value)
+    {
+      return false;
+    }
+
+  return true;
+}
+
+static void proactive_observe_model_event(
+  struct home_proactive_event_s *event)
+{
+  struct home_proactive_snapshot_s before;
+  struct home_proactive_snapshot_s after;
+  bool command_match;
+
+  home_proactive_get_snapshot(&before);
+  command_match = proactive_command_matches(event);
+  event->self_generated = command_match;
+  home_proactive_observe_event(event);
+  if (command_match)
+    {
+      if (g_proactive_command.automation)
+        {
+          home_proactive_automation_result(true);
+        }
+      memset(&g_proactive_command, 0, sizeof(g_proactive_command));
+    }
+  home_proactive_get_snapshot(&after);
+
+  if (after.mode == HOME_PROACTIVE_REAL &&
+      (after.routine_count != before.routine_count ||
+       after.routine_observations != before.routine_observations ||
+       after.automation_count != before.automation_count))
+    {
+      schedule_proactive_persist();
+      syslog(LOG_INFO,
+             "[HOME][AGENT] learned routines=%u observations=%u "
+             "automations=%u\n",
+             after.routine_count, after.routine_observations,
+             after.automation_count);
+    }
+}
+
+static void proactive_observe_model_changes(
+  const struct home_panel_family_model_s *previous,
+  const struct home_panel_family_model_s *next)
+{
+  struct home_proactive_event_s event;
+  uint32_t day_ordinal;
+  uint16_t minute_of_day;
+  uint32_t now_ms;
+  unsigned int device_index;
+
+  if (!proactive_event_time(&day_ordinal, &minute_of_day))
+    {
+      return;
+    }
+
+  now_ms = lv_tick_get();
+  for (device_index = 0; device_index < next->device_count; device_index++)
+    {
+      const struct home_panel_device_s *device =
+        &next->devices[device_index];
+      const struct home_panel_device_s *old_device =
+        proactive_find_device(previous, device->did);
+      unsigned int observable_index;
+
+      if (old_device == NULL)
+        {
+          continue;
+        }
+
+      if (old_device->online != device->online)
+        {
+          memset(&event, 0, sizeof(event));
+          event.device_hash = proactive_hash_device_id(device->did);
+          event.day_ordinal = day_ordinal;
+          event.now_ms = now_ms;
+          event.minute_of_day = minute_of_day;
+          event.value = device->online ? 1 : 0;
+          event.kind = HOME_PROACTIVE_EVENT_ONLINE;
+          proactive_observe_model_event(&event);
+        }
+
+      for (observable_index = 0;
+           observable_index < device->observable_count;
+           observable_index++)
+        {
+          const struct home_panel_observable_s *observable =
+            &device->observables[observable_index];
+          const struct home_panel_observable_s *old_observable =
+            proactive_find_observable(old_device, observable->siid,
+                                      observable->piid);
+          const struct home_panel_control_s *control;
+          bool changed;
+
+          if (old_observable == NULL || !observable->has_value ||
+              !old_observable->has_value ||
+              old_observable->type != observable->type)
+            {
+              continue;
+            }
+
+          changed = observable->type == HOME_PANEL_CONTROL_BOOLEAN ?
+                    old_observable->boolean_value !=
+                      observable->boolean_value :
+                    old_observable->value != observable->value;
+          if (!changed)
+            {
+              continue;
+            }
+
+          control = proactive_find_control(device, observable->siid,
+                                           observable->piid);
+          memset(&event, 0, sizeof(event));
+          event.device_hash = proactive_hash_device_id(device->did);
+          event.day_ordinal = day_ordinal;
+          event.now_ms = now_ms;
+          event.minute_of_day = minute_of_day;
+          event.siid = observable->siid;
+          event.piid = observable->piid;
+          event.value =
+            observable->type == HOME_PANEL_CONTROL_BOOLEAN ?
+              (observable->boolean_value ? 1 : 0) : observable->value;
+          event.kind =
+            observable->type == HOME_PANEL_CONTROL_BOOLEAN ?
+              HOME_PROACTIVE_EVENT_BOOLEAN :
+              HOME_PROACTIVE_EVENT_NUMBER;
+          event.writable =
+            control != NULL && proactive_safe_action_device(device);
+          proactive_observe_model_event(&event);
+        }
+    }
+}
+
+static int refresh_family_model(
+  const struct home_panel_mijia_family_snapshot_s *snapshot,
+  const struct home_panel_family_model_s *model)
+{
   bool changed;
   bool structure_changed;
-  int ret;
 
-  if (snapshot->revision == 0 || snapshot->json_size == 0)
+  if (snapshot == NULL || model == NULL || snapshot->revision == 0 ||
+      snapshot->json_size == 0 || model->revision != snapshot->revision)
     {
       return -EAGAIN;
     }
 
-  model = calloc(1, sizeof(*model));
-  if (model == NULL)
+  changed = !g_family_model_valid ||
+            memcmp((const char *)&g_family_model +
+                   sizeof(g_family_model.revision),
+                   (const char *)model + sizeof(model->revision),
+                   sizeof(*model) - sizeof(model->revision)) != 0;
+  if (changed)
     {
-      return -ENOMEM;
-    }
-
-  ret = home_panel_mijia_get_family_model(snapshot->revision, model);
-
-  if (ret == 0)
-    {
-      changed = !g_family_model_valid ||
-                memcmp((const char *)&g_family_model +
-                       sizeof(g_family_model.revision),
-                       (const char *)model + sizeof(model->revision),
-                       sizeof(*model) - sizeof(model->revision)) != 0;
-      if (changed)
+      structure_changed = !g_family_model_valid ||
+        family_structure_changed(&g_family_model, model);
+      if (g_family_model_valid)
         {
-          structure_changed = !g_family_model_valid ||
-            family_structure_changed(&g_family_model, model);
-          memcpy(&g_family_model, model, sizeof(g_family_model));
-          g_family_model_valid = true;
-          if (structure_changed)
+          proactive_observe_model_changes(&g_family_model, model);
+        }
+      memcpy(&g_family_model, model, sizeof(g_family_model));
+      g_family_model_valid = true;
+      if (structure_changed)
+        {
+          g_family_ui_revision++;
+          if (g_family_ui_revision == 0)
             {
-              g_family_ui_revision++;
-              if (g_family_ui_revision == 0)
-                {
-                  g_family_ui_revision = 1;
-                }
+              g_family_ui_revision = 1;
             }
-          else
-            {
-              update_model_widgets();
-              ret = 2;
-            }
-          syslog(LOG_INFO,
-                 "[HOME][MODEL] revision=%u devices=%u online=%u rooms=%u "
-                 "scenes=%u event=%s mqtt=%u update=%s\n",
-                 (unsigned int)model->revision, model->device_count,
-                 model->online_count, model->room_count, model->scene_count,
-                 model->event_source, model->mqtt_connected ? 1 : 0,
-                 structure_changed ? "rebuild" : "in-place");
         }
       else
         {
-          g_family_model.revision = model->revision;
-          syslog(LOG_INFO,
-                 "[HOME][MODEL] revision=%u display-unchanged\n",
-                 (unsigned int)model->revision);
-          ret = 1;
+          update_model_widgets();
         }
-    }
-  else
-    {
-      syslog(LOG_WARNING,
-             "[HOME][MODEL] parse failed revision=%u ret=%d\n",
-             (unsigned int)snapshot->revision, ret);
+      syslog(LOG_INFO,
+             "[HOME][MODEL] revision=%u devices=%u online=%u rooms=%u "
+             "scenes=%u event=%s mqtt=%u update=%s\n",
+             (unsigned int)model->revision, model->device_count,
+             model->online_count, model->room_count, model->scene_count,
+             model->event_source, model->mqtt_connected ? 1 : 0,
+             structure_changed ? "rebuild" : "in-place");
+      return structure_changed ? 0 : 2;
     }
 
-  free(model);
-  return ret;
+  g_family_model.revision = model->revision;
+  syslog(LOG_INFO,
+         "[HOME][MODEL] revision=%u display-unchanged\n",
+         (unsigned int)model->revision);
+  return 1;
 }
 
 static void create_home_screen(void)
@@ -3286,6 +4683,9 @@ static void create_home_screen(void)
   lv_obj_set_size(topbar, PANEL_WIDTH, TOPBAR_HEIGHT);
   lv_obj_set_style_bg_color(topbar, lv_color_hex(COLOR_SURFACE), 0);
   lv_obj_set_style_bg_opa(topbar, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(topbar, 1, 0);
+  lv_obj_set_style_border_side(topbar, LV_BORDER_SIDE_BOTTOM, 0);
+  lv_obj_set_style_border_color(topbar, lv_color_hex(COLOR_BORDER), 0);
 
   g_clock_label = make_label(topbar, "--:--", 24, 17,
                              lv_color_hex(COLOR_TEXT),
@@ -3304,8 +4704,10 @@ static void create_home_screen(void)
   lv_obj_set_pos(login, 886, 14);
   lv_obj_set_style_radius(login, UI_RADIUS, 0);
   lv_obj_set_style_shadow_width(login, 0, 0);
+  lv_obj_set_style_border_width(login, 1, 0);
+  lv_obj_set_style_border_color(login, lv_color_hex(0x7bb4ff), 0);
   lv_obj_set_style_bg_color(login, lv_color_hex(COLOR_BLUE), 0);
-  lv_obj_set_style_bg_color(login, lv_color_hex(0x3475d6),
+  lv_obj_set_style_bg_color(login, lv_color_hex(0x478ee8),
                             LV_STATE_PRESSED);
   lv_obj_add_event_cb(login, show_login, LV_EVENT_CLICKED, NULL);
   g_login_top_label = lv_label_create(login);
@@ -3317,13 +4719,14 @@ static void create_home_screen(void)
   lv_obj_remove_style_all(nav);
   lv_obj_set_pos(nav, 0, TOPBAR_HEIGHT);
   lv_obj_set_size(nav, NAV_WIDTH, PANEL_HEIGHT - TOPBAR_HEIGHT);
-  lv_obj_set_style_bg_color(nav, lv_color_hex(0x13161a), 0);
+  lv_obj_set_style_bg_color(nav, lv_color_hex(COLOR_NAV), 0);
   lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, 0);
 
   g_nav_buttons[0] = make_nav_button(nav, LV_SYMBOL_HOME, "家庭", 20, 0);
   g_nav_buttons[1] = make_nav_button(nav, LV_SYMBOL_LIST, "房间", 84, 1);
   g_nav_buttons[2] = make_nav_button(nav, LV_SYMBOL_PLAY, "场景", 148, 2);
-  g_nav_buttons[3] = make_nav_button(nav, LV_SYMBOL_SETTINGS, "设置", 432, 3);
+  g_nav_buttons[3] = make_nav_button(nav, LV_SYMBOL_REFRESH, "智能", 212, 3);
+  g_nav_buttons[4] = make_nav_button(nav, LV_SYMBOL_SETTINGS, "设置", 432, 4);
 
   g_page_host = lv_obj_create(screen);
   lv_obj_remove_style_all(g_page_host);
@@ -3365,17 +4768,23 @@ int main(int argc, char *argv[])
   struct home_panel_mijia_snapshot_s mijia_snapshot;
   struct home_panel_mijia_family_snapshot_s family_snapshot;
   struct home_panel_mijia_command_snapshot_s command_snapshot;
+  struct home_panel_agent_snapshot_s agent_snapshot;
   uint32_t displayed_mijia_revision = UINT32_MAX;
   uint32_t displayed_family_revision = 0;
   uint32_t displayed_command_revision = 0;
   uint32_t last_slow_refresh_log = 0;
   uint32_t last_mijia_poll = 0;
+  uint32_t last_proactive_tick = 0;
+  uint32_t last_proactive_ui_poll = 0;
+  uint32_t last_proactive_cloud_poll = 0;
+  uint32_t last_proactive_context = 0;
   struct sched_param ui_param;
   int ui_policy;
   int ret;
 
   (void)argc;
   (void)argv;
+  memset(&mijia_snapshot, 0, sizeof(mijia_snapshot));
 
   if (lv_is_initialized())
     {
@@ -3402,6 +4811,8 @@ int main(int argc, char *argv[])
       syslog(LOG_ERR,
              "[HOME][FONT] using built-in subset fallback ret=%d\n", ret);
     }
+  load_proactive_profile();
+  update_proactive_context();
 
   lv_nuttx_dsc_init(&info);
 #ifdef CONFIG_INPUT_TOUCHSCREEN
@@ -3455,6 +4866,39 @@ int main(int argc, char *argv[])
         }
 
       update_time_ui(false);
+      if (last_proactive_tick == 0 ||
+          lv_tick_elaps(last_proactive_tick) >= PROACTIVE_TICK_MS)
+        {
+          last_proactive_tick = lv_tick_get();
+          home_proactive_tick(last_proactive_tick);
+          process_proactive_automation();
+        }
+      if (proactive_persist_retry_ready())
+        {
+          schedule_proactive_persist();
+        }
+      if (last_proactive_context == 0 ||
+          lv_tick_elaps(last_proactive_context) >= 1000)
+        {
+          last_proactive_context = lv_tick_get();
+          update_proactive_context();
+        }
+      if (g_proactive_mode_label != NULL &&
+          (last_proactive_ui_poll == 0 ||
+           lv_tick_elaps(last_proactive_ui_poll) >= PROACTIVE_UI_POLL_MS))
+        {
+          struct home_proactive_snapshot_s proactive_snapshot;
+
+          last_proactive_ui_poll = lv_tick_get();
+          home_proactive_get_snapshot(&proactive_snapshot);
+          home_panel_mijia_get_agent_snapshot(&agent_snapshot);
+          if (g_displayed_proactive_revision !=
+                proactive_snapshot.revision ||
+              g_displayed_agent_revision != agent_snapshot.revision)
+            {
+              update_proactive_widgets();
+            }
+        }
 
       if (last_mijia_poll == 0 ||
           lv_tick_elaps(last_mijia_poll) >= MIJIA_UI_POLL_MS)
@@ -3479,11 +4923,13 @@ int main(int argc, char *argv[])
               show_login(NULL);
             }
 
-          home_panel_mijia_get_family_snapshot(&family_snapshot);
-          if (family_snapshot.revision != 0 &&
-              displayed_family_revision != family_snapshot.revision)
+          ret = home_panel_mijia_get_family_update(
+            displayed_family_revision, &family_snapshot,
+            &g_family_update_model);
+          if (ret == 0)
             {
-              ret = refresh_family_model(&family_snapshot);
+              ret = refresh_family_model(&family_snapshot,
+                                         &g_family_update_model);
               if (ret >= 0)
                 {
                   displayed_family_revision = family_snapshot.revision;
@@ -3515,6 +4961,20 @@ int main(int argc, char *argv[])
                      (unsigned int)command_snapshot.state,
                      command_snapshot.code);
             }
+        }
+
+      if (last_proactive_cloud_poll == 0 ||
+          lv_tick_elaps(last_proactive_cloud_poll) >=
+            PROACTIVE_CLOUD_POLL_MS)
+        {
+          struct home_proactive_snapshot_s proactive_snapshot;
+
+          last_proactive_cloud_poll = lv_tick_get();
+          home_proactive_get_snapshot(&proactive_snapshot);
+          request_proactive_cloud_learning(&proactive_snapshot,
+                                           mijia_snapshot.state);
+          request_proactive_cloud_analysis(&proactive_snapshot,
+                                           mijia_snapshot.state);
         }
 
       if (g_model_refresh_pending &&

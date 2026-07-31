@@ -107,6 +107,8 @@
 #define MII_LPA                      5
 #define BMCR_RESET                   (1u << 15)
 #define BMCR_ANENABLE                (1u << 12)
+#define BMCR_POWERDOWN               (1u << 11)
+#define BMCR_ISOLATE                 (1u << 10)
 #define BMCR_ANRESTART               (1u << 9)
 #define BMSR_LINK                    (1u << 2)
 #define ADVERTISE_10HALF             (1u << 5)
@@ -141,6 +143,9 @@
 #define GMAC_CACHE_LINE              32
 #define GMAC_LINK_POLL               SEC2TICK(1)
 #define GMAC_LINK_WAIT_LOOPS          100
+#define GMAC_LINK_ERROR_LOG_INTERVAL   30
+#define GMAC_LINK_RECOVERY_FIRST       10
+#define GMAC_LINK_RECOVERY_INTERVAL    30
 
 struct d13x_gmac_desc_s
 {
@@ -164,6 +169,10 @@ struct d13x_gmac_s
   uint8_t txhead;
   uint8_t txtail;
   uint8_t txpending;
+  uint16_t link_poll_errors;
+  uint16_t link_queue_errors;
+  uint16_t link_down_polls;
+  uint16_t link_recoveries;
   struct work_s irqwork;
   struct work_s pollwork;
   struct work_s linkwork;
@@ -387,7 +396,7 @@ static void d13x_gmac_set_link(bool speed100, bool full_duplex)
   putreg32(value, GMAC_REG(GMAC_MACCONF));
 }
 
-static void d13x_phy_update_link(void)
+static int d13x_phy_update_link(void)
 {
   uint16_t bmsr;
   uint16_t advertise;
@@ -397,10 +406,20 @@ static void d13x_phy_update_link(void)
   bool speed100 = true;
   bool full_duplex = true;
 
-  if (d13x_mdio_read(g_gmac.phyaddr, MII_BMSR, &bmsr) < 0 ||
-      d13x_mdio_read(g_gmac.phyaddr, MII_BMSR, &bmsr) < 0)
+  int ret;
+
+  ret = d13x_mdio_read(g_gmac.phyaddr, MII_BMSR, &bmsr);
+  if (ret < 0)
     {
-      return;
+      return ret;
+    }
+
+  /* BMSR link is latch-low.  The second read returns the current state. */
+
+  ret = d13x_mdio_read(g_gmac.phyaddr, MII_BMSR, &bmsr);
+  if (ret < 0)
+    {
+      return ret;
     }
 
   link = (bmsr & BMSR_LINK) != 0;
@@ -451,26 +470,149 @@ static void d13x_phy_update_link(void)
           syslog(LOG_WARNING, "[D13GMAC] link down\n");
         }
     }
+
+  if (link)
+    {
+      g_gmac.link_down_polls = 0;
+      g_gmac.link_recoveries = 0;
+    }
+
+  return OK;
+}
+
+static int d13x_phy_restart_autoneg(void)
+{
+  uint16_t bmcr;
+  uint16_t bmsr = 0xffff;
+  uint16_t advertise = 0xffff;
+  uint16_t partner = 0xffff;
+  int ret;
+
+  ret = d13x_mdio_read(g_gmac.phyaddr, MII_BMCR, &bmcr);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* These reads are diagnostic only; keep recovery possible even if one
+   * optional status read fails.
+   */
+
+  d13x_mdio_read(g_gmac.phyaddr, MII_BMSR, &bmsr);
+  d13x_mdio_read(g_gmac.phyaddr, MII_BMSR, &bmsr);
+  d13x_mdio_read(g_gmac.phyaddr, MII_ADVERTISE, &advertise);
+  d13x_mdio_read(g_gmac.phyaddr, MII_LPA, &partner);
+
+  bmcr &= ~(BMCR_RESET | BMCR_POWERDOWN | BMCR_ISOLATE);
+  bmcr |= BMCR_ANENABLE | BMCR_ANRESTART;
+  ret = d13x_mdio_write(g_gmac.phyaddr, MII_BMCR, bmcr);
+  if (ret == OK)
+    {
+      syslog(LOG_INFO,
+             "[D13GMAC] link recovery=%u bmcr=%04x bmsr=%04x "
+             "anar=%04x anlpar=%04x\n",
+             g_gmac.link_recoveries + 1, bmcr, bmsr,
+             advertise, partner);
+    }
+
+  return ret;
 }
 
 static void d13x_link_work(FAR void *arg)
 {
+  unsigned int recovery_poll_limit;
+  int ret;
+
   (void)arg;
   if (g_gmac.ifup)
     {
       net_lock();
-      d13x_phy_update_link();
+      ret = d13x_phy_update_link();
       net_unlock();
-      wd_start(&g_gmac.linktimer, GMAC_LINK_POLL, d13x_link_timer, 0);
+      if (ret < 0)
+        {
+          g_gmac.link_poll_errors++;
+          if (g_gmac.link_poll_errors == 1 ||
+              g_gmac.link_poll_errors % GMAC_LINK_ERROR_LOG_INTERVAL == 0)
+            {
+              syslog(LOG_WARNING,
+                     "[D13GMAC] link poll MDIO error=%d count=%u\n",
+                     ret, g_gmac.link_poll_errors);
+            }
+        }
+      else
+        {
+          g_gmac.link_poll_errors = 0;
+          if (!g_gmac.link)
+            {
+              recovery_poll_limit =
+                g_gmac.link_recoveries == 0 ?
+                  GMAC_LINK_RECOVERY_FIRST :
+                  GMAC_LINK_RECOVERY_INTERVAL;
+              if (g_gmac.link_down_polls < UINT16_MAX)
+                {
+                  g_gmac.link_down_polls++;
+                }
+
+              if (g_gmac.link_down_polls >= recovery_poll_limit)
+                {
+                  ret = d13x_phy_restart_autoneg();
+                  g_gmac.link_down_polls = 0;
+                  if (ret == OK)
+                    {
+                      if (g_gmac.link_recoveries < UINT16_MAX)
+                        {
+                          g_gmac.link_recoveries++;
+                        }
+                    }
+                  else
+                    {
+                      syslog(LOG_WARNING,
+                             "[D13GMAC] link recovery failed ret=%d\n",
+                             ret);
+                    }
+                }
+            }
+        }
     }
 }
 
 static void d13x_link_timer(wdparm_t arg)
 {
+  int ret;
+
   (void)arg;
-  if (work_available(&g_gmac.linkwork))
+  if (!g_gmac.ifup)
     {
-      work_queue(LPWORK, &g_gmac.linkwork, d13x_link_work, NULL, 0);
+      return;
+    }
+
+  /* Rearm from the watchdog itself.  Previously the worker rearmed the
+   * timer, so one failed or skipped queue operation stopped carrier polling
+   * forever.
+   */
+
+  wd_start(&g_gmac.linktimer, GMAC_LINK_POLL, d13x_link_timer, 0);
+  if (!work_available(&g_gmac.linkwork))
+    {
+      return;
+    }
+
+  ret = work_queue(LPWORK, &g_gmac.linkwork, d13x_link_work, NULL, 0);
+  if (ret < 0)
+    {
+      g_gmac.link_queue_errors++;
+      if (g_gmac.link_queue_errors == 1 ||
+          g_gmac.link_queue_errors % GMAC_LINK_ERROR_LOG_INTERVAL == 0)
+        {
+          syslog(LOG_WARNING,
+                 "[D13GMAC] link poll queue error=%d count=%u\n",
+                 ret, g_gmac.link_queue_errors);
+        }
+    }
+  else
+    {
+      g_gmac.link_queue_errors = 0;
     }
 }
 
@@ -748,6 +890,10 @@ static int d13x_ifup(FAR struct net_driver_s *dev)
            GMAC_REG(GMAC_RXDMA0CTL));
   priv->ifup = true;
   priv->link = false;
+  priv->link_poll_errors = 0;
+  priv->link_queue_errors = 0;
+  priv->link_down_polls = 0;
+  priv->link_recoveries = 0;
   netdev_carrier_off(dev);
   up_enable_irq(D13X_IRQ_GMAC0);
   syslog(LOG_INFO, "[D13GMAC] eth0 up, waiting for carrier\n");
@@ -759,11 +905,21 @@ static int d13x_ifup(FAR struct net_driver_s *dev)
 
   for (timeout = 0; timeout < GMAC_LINK_WAIT_LOOPS && !priv->link; timeout++)
     {
-      d13x_phy_update_link();
+      if (d13x_phy_update_link() < 0)
+        {
+          priv->link_poll_errors++;
+        }
       if (!priv->link)
         {
           up_mdelay(50);
         }
+    }
+
+  if (!priv->link)
+    {
+      priv->link_down_polls = GMAC_LINK_RECOVERY_FIRST;
+      syslog(LOG_INFO,
+             "[D13GMAC] initial link wait expired; background polling active\n");
     }
 
   wd_start(&priv->linktimer, GMAC_LINK_POLL, d13x_link_timer, 0);
