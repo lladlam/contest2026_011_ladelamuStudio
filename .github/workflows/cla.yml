@@ -12,5 +12,10 @@ on:
 jobs:
   cla:
     if: github.event_name == 'pull_request_target' || (github.event.issue.pull_request && contains(github.event.comment.body, '/check-cla'))
+    permissions:
+      checks: write
+      contents: read
+      pull-requests: write
+      statuses: write
     uses: open-vela/public-actions/.github/workflows/cla.yml@dev
     secrets: inherit
