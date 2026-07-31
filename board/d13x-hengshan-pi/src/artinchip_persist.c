@@ -25,6 +25,8 @@
 
 #define D13X_PERSIST_SLOT0          0x000fe000u
 #define D13X_PERSIST_SLOT1          0x000ff000u
+#define D13X_AGENT_PERSIST_SLOT0    0x000fc000u
+#define D13X_AGENT_PERSIST_SLOT1    0x000fd000u
 #define D13X_PERSIST_LEGACY_SLOT0   0x00efe000u
 #define D13X_PERSIST_LEGACY_SLOT1   0x00eff000u
 #define D13X_PERSIST_PAGE_SIZE      256u
@@ -542,6 +544,85 @@ static int d13x_read_pair(uint32_t slot0, uint32_t slot1, void *buffer,
   return 0;
 }
 
+static int d13x_write_pair(uint32_t slot0, uint32_t slot1,
+                           const void *buffer, size_t length)
+{
+  struct d13x_persist_header_s headers[2];
+  uint8_t payload[D13X_PERSIST_MAX_PAYLOAD];
+  uint8_t verify[D13X_PERSIST_MAX_PAYLOAD];
+  uint32_t address;
+  uint32_t sequence;
+  int results[2];
+  int ret;
+
+  if (buffer == NULL || length == 0 || length > sizeof(payload))
+    {
+      return -EINVAL;
+    }
+
+  ret = nxmutex_lock(&g_qspi_lock);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  results[0] = d13x_read_slot(slot0, &headers[0], payload);
+  results[1] = d13x_read_slot(slot1, &headers[1], payload);
+  if (results[0] == 0 &&
+      (results[1] < 0 || d13x_sequence_newer(headers[0].sequence,
+                                             headers[1].sequence)))
+    {
+      address = slot1;
+      sequence = headers[0].sequence + 1;
+    }
+  else if (results[1] == 0)
+    {
+      address = slot0;
+      sequence = headers[1].sequence + 1;
+    }
+  else
+    {
+      address = slot0;
+      sequence = 1;
+    }
+
+  memset(&headers[0], 0xff, sizeof(headers[0]));
+  headers[0].magic = D13X_PERSIST_MAGIC;
+  headers[0].version = D13X_PERSIST_VERSION;
+  headers[0].sequence = sequence;
+  headers[0].length = length;
+  headers[0].crc32 = d13x_crc32(buffer, length);
+
+  ret = d13x_spinor_erase(address);
+  if (ret == 0)
+    {
+      ret = d13x_spinor_program(address + sizeof(headers[0]), buffer,
+                                length);
+    }
+  if (ret == 0)
+    {
+      /* Program the validity header last.  A power loss cannot make an
+       * incomplete payload supersede the previous valid slot.
+       */
+      ret = d13x_spinor_program(address, &headers[0], sizeof(headers[0]));
+    }
+  if (ret == 0)
+    {
+      ret = d13x_read_slot(address, &headers[1], verify);
+    }
+  if (ret == 0 &&
+      (headers[1].sequence != sequence || headers[1].length != length ||
+       memcmp(buffer, verify, length) != 0))
+    {
+      ret = -EIO;
+    }
+
+  memset(payload, 0, sizeof(payload));
+  memset(verify, 0, sizeof(verify));
+  nxmutex_unlock(&g_qspi_lock);
+  return ret;
+}
+
 int board_persist_read(void *buffer, size_t capacity, size_t *length)
 {
   bool migrate = false;
@@ -587,15 +668,15 @@ int board_persist_read(void *buffer, size_t capacity, size_t *length)
 
 int board_persist_write(const void *buffer, size_t length)
 {
-  struct d13x_persist_header_s headers[2];
-  uint8_t payload[D13X_PERSIST_MAX_PAYLOAD];
-  uint8_t verify[D13X_PERSIST_MAX_PAYLOAD];
-  uint32_t address;
-  uint32_t sequence;
-  int results[2];
+  return d13x_write_pair(D13X_PERSIST_SLOT0, D13X_PERSIST_SLOT1,
+                         buffer, length);
+}
+
+int board_agent_persist_read(void *buffer, size_t capacity, size_t *length)
+{
   int ret;
 
-  if (buffer == NULL || length == 0 || length > sizeof(payload))
+  if (buffer == NULL || length == NULL)
     {
       return -EINVAL;
     }
@@ -605,60 +686,16 @@ int board_persist_write(const void *buffer, size_t length)
     {
       return ret;
     }
-
-  results[0] = d13x_read_slot(D13X_PERSIST_SLOT0, &headers[0], payload);
-  results[1] = d13x_read_slot(D13X_PERSIST_SLOT1, &headers[1], payload);
-  if (results[0] == 0 &&
-      (results[1] < 0 || d13x_sequence_newer(headers[0].sequence,
-                                             headers[1].sequence)))
-    {
-      address = D13X_PERSIST_SLOT1;
-      sequence = headers[0].sequence + 1;
-    }
-  else if (results[1] == 0)
-    {
-      address = D13X_PERSIST_SLOT0;
-      sequence = headers[1].sequence + 1;
-    }
-  else
-    {
-      address = D13X_PERSIST_SLOT0;
-      sequence = 1;
-    }
-
-  memset(&headers[0], 0xff, sizeof(headers[0]));
-  headers[0].magic = D13X_PERSIST_MAGIC;
-  headers[0].version = D13X_PERSIST_VERSION;
-  headers[0].sequence = sequence;
-  headers[0].length = length;
-  headers[0].crc32 = d13x_crc32(buffer, length);
-
-  ret = d13x_spinor_erase(address);
-  if (ret == 0)
-    {
-      ret = d13x_spinor_program(address + sizeof(headers[0]), buffer,
-                                length);
-    }
-  if (ret == 0)
-    {
-      /* Program the validity header last.  A power loss cannot make an
-       * incomplete payload supersede the previous valid slot.
-       */
-      ret = d13x_spinor_program(address, &headers[0], sizeof(headers[0]));
-    }
-  if (ret == 0)
-    {
-      ret = d13x_read_slot(address, &headers[1], verify);
-    }
-  if (ret == 0 &&
-      (headers[1].sequence != sequence || headers[1].length != length ||
-       memcmp(buffer, verify, length) != 0))
-    {
-      ret = -EIO;
-    }
-
-  memset(payload, 0, sizeof(payload));
-  memset(verify, 0, sizeof(verify));
+  ret = d13x_read_pair(D13X_AGENT_PERSIST_SLOT0,
+                       D13X_AGENT_PERSIST_SLOT1,
+                       buffer, capacity, length);
   nxmutex_unlock(&g_qspi_lock);
   return ret;
+}
+
+int board_agent_persist_write(const void *buffer, size_t length)
+{
+  return d13x_write_pair(D13X_AGENT_PERSIST_SLOT0,
+                         D13X_AGENT_PERSIST_SLOT1,
+                         buffer, length);
 }
