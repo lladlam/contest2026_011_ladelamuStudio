@@ -13,6 +13,7 @@
 | `timer/` | CORET、调度、系统时间和 NTP |
 | `ethernet/` | PHY、DHCP、DNS、网关和断线恢复 |
 | `persistence/` | 米家登录信息的重启与升级保持 |
+| `proactive/` | 主动智能冷启动、通用行为触发、回放隔离、反馈、设备执行和画像恢复 |
 | `stress/` | 长稳、反复切页、网络和内存观察 |
 | `xts/` | XTS 套件清单、执行结果与适用性说明 |
 
@@ -22,7 +23,7 @@
 也可以用脚本创建一次本地测试记录，并自动保存镜像哈希和源码状态：
 
 ```bash
-./tests/new-run.sh /path/to/d13x_hengshan-pi_v1.11.15.8.img
+./tests/new-run.sh /path/to/d13x_hengshan-pi_v1.12.15.8.img
 ```
 
 结果默认写入被 Git 忽略的 `validation-artifacts/<version>/<run-id>/`。完成并

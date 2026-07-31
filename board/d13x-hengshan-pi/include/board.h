@@ -41,6 +41,8 @@
 
 int board_persist_read(void *buffer, size_t capacity, size_t *length);
 int board_persist_write(const void *buffer, size_t length);
+int board_agent_persist_read(void *buffer, size_t capacity, size_t *length);
+int board_agent_persist_write(const void *buffer, size_t length);
 int board_flash_read(uint32_t address, void *buffer, size_t length);
 
 #endif /* __VENDOR_ARTINCHIP_BOARDS_D13X_HENGSHAN_PI_INCLUDE_BOARD_H */

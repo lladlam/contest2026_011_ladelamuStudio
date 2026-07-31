@@ -1,6 +1,6 @@
 # OpenVela D13x 衡山派家庭中控屏
 
-当前发布版本：**1.11.15.8**。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+当前发布版本：**1.12.15.8**。版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 一、作品简介
 
@@ -9,7 +9,7 @@
 交互控制台、LVDS 1024x600 显示、GT911 电容触摸、RMII 百兆以太网和横屏家庭
 中控应用。
 
-家庭屏开机自动运行，可显示家庭、房间、场景和设置界面，并通过有线网络区分
+家庭屏开机自动运行，可显示家庭、房间、场景、主动智能和设置界面，并通过有线网络区分
 “有线网络未连接”“无互联网连接”和“已连接互联网”状态。应用通过局域网内的
 独立 `mijia-api` 服务完成米家 App 扫码登录，并同步家庭名称、设备总数与在线数；
 小米账号 Cookie 不存放在开发板，板端只持久保存自动恢复所需的服务令牌和保险箱
@@ -24,6 +24,12 @@
   分区，动态米家设备名和房间名不再受静态字形子集限制。
 - 米家状态采用带连续版本的 MIoT 增量补丁；常规属性变化不再重复传输和解析
   完整家庭快照，版本断档或家庭结构变化时自动回退全量同步。
+- 板端主动智能引擎实时学习任意已同步设备行为之间的关联：布尔属性、数值属性、
+  设备上下线和时间习惯均可触发建议；睡眠准备仅作为冷启动示例；
+  用户确认后才发送 MIoT 控制指令，并用接受、仅当天忽略和降低提醒频率反馈
+  更新本地画像。
+- 内置明确标注的七天模拟历史回放，可在约 25 秒内展示冷启动、在线学习和
+  第八天决策；模拟画像与真实画像严格隔离，不会写入持久化存储。
 
 ## 二、选题方向
 
@@ -36,7 +42,7 @@
 ## 三、目录结构
 
 ```text
-app/home_panel/          1024x600 家庭中控 LVGL 应用、网络检测与字体流式加载
+app/home_panel/          家庭中控 UI、米家同步、网络检测与板端主动智能引擎
 assets/fonts/            MiSans 源 TTF、完整字符集 BinFont 及资源说明
 board/d13x-hengshan-pi/  板级初始化、NSH 配置、链接脚本和镜像打包输入
 chip/d13x/               D13x 启动、中断、串口、I2C、显示、定时器和 GMAC 驱动
@@ -46,7 +52,8 @@ patches/                 上游组件兼容性补丁
 scripts/integrate.sh     将本仓源码集成到 OpenVela 工作区
 scripts/build.sh         配置、编译并打包可烧录镜像
 logs/                    官方格式的 AI Coding 对话日志
-tests/                   驱动、稳定性与 XTS 的可重复验收步骤和结果模板
+tests/                   驱动、主动智能、稳定性与 XTS 的可重复验收步骤和结果模板
+skills/                  开发板 AI 请求与服务端 AI 分析各自使用的 Skill
 .github/workflows/       GitHub Actions 构建与 Release 流程
 VALIDATION.md            当前候选固件的验收矩阵、指标、风险和证据索引
 VERSION                  四段累计版本号
@@ -133,8 +140,20 @@ nsh> ping 192.168.1.1
 | font | 8 MiB（完整字符集的预编译 MiSans BinFont） |
 | data | 4 MiB |
 
-米家登录凭据使用冗余记录保存在 `userid` 分区末尾。该分区不包含在升级镜像的
-`target` 列表内，因此正常重新烧录系统、资源和数据分区不会清除登录状态。
+米家登录凭据与主动智能用户画像分别使用独立的双槽冗余记录保存在 `userid`
+分区末尾。记录带序号和 CRC，写入时最后提交有效头；该分区不包含在升级镜像的
+`target` 列表内，因此正常重新烧录系统、资源和数据分区不会清除登录状态或画像。
+
+主动智能采用“本地候选与安全门 + 可选云端深度分析 + 本地确认执行”。无网络、
+超时、非法返回或情境变化时自动使用板端算法；云端不接收设备标识和认证信息，
+也不能直接控制设备。板端持续从 MIoT 属性变化和人工操作中增量学习；匿名统计
+同步至服务端加密画像，只有发现新规律、跨置信阈值、反馈冲突或明显漂移时才调用
+大模型。用户明确启用的低风险自动化在断网后仍可由板端执行。真实运行、演示回放、
+开发板访问 AI 时不在固件保存模型密钥，而是经鉴权 HTTPS 请求米家服务；服务端
+识别该入口并只加载开发板 Skill。服务端自主做长期画像和漂移分析时加载另一份
+服务端 Skill。两者都由服务程序直接读取仓库内 `SKILL.md`，不依赖 OpenClaw
+运行。Skill、隐私字段和故障行为详见
+[`docs/PROACTIVE_INTELLIGENCE.md`](docs/PROACTIVE_INTELLIGENCE.md)。
 
 ## 五、AI Coding 使用说明
 
@@ -166,6 +185,8 @@ GitHub Actions 和开发板实机输出作为最终验收依据。完整对话�
 | [lv_font_conv](https://github.com/lvgl/lv_font_conv) | 生成字体分区不可用时的最小 LVGL 回退字库 | 仅生成阶段 | MIT；不作为固件运行时依赖 |
 | [mijia-api](https://github.com/Do1e/mijia-api) | 米家 App 扫码登录、家庭、设备、属性和场景的服务端接口参考 | GPL-3.0-or-later | 仅运行在服务器侧，不复制或链接进 D13x 固件 |
 | [Xiaomi Home Integration](https://github.com/XiaoMi/ha_xiaomi_home) | 核对小米官方 HTTP 控制、MQTT 状态订阅与 MIoT-Spec 消息架构 | 官方主分支 | Apache-2.0；仅作协议与架构参考，不复制进固件 |
+| [Xiaomi MiLoco](https://github.com/XiaoMi/xiaomi-miloco) | 参考家庭记忆、习惯提升、任务确认和 Skill 的组织方式 | 官方主分支 | 小米非商业许可；仅作架构与交互参考，不复制其运行时代码 |
+| [OpenClaw](https://github.com/openclaw/openclaw) | 参考已有本机环境中的 Skill 目录与元数据形式 | 参考当前本机安装 | 仅作设计参考；不是固件或服务端运行依赖 |
 | [ArtInChip Luban-Lite](https://gitee.com/artinchip/luban-lite) | D13x 启动、时钟、显示和外设寄存器参考 | 参考代码 | 不作为独立运行时库；使用时遵循其上游许可声明 |
 
 服务端使用 [lladlam/mijia](https://github.com/lladlam/mijia) 维护的独立
@@ -201,10 +222,10 @@ LVGL BinFont 读取，不在运行时解析 TTF 或执行浮点光栅化。BinFo
 | 米家扫码登录 | 已验证 | 米家 App 扫码确认、令牌领取、家庭与设备统计正常 |
 | 米家服务端 | 已验证 | `mi.lladlam.top` 使用有效 HTTPS 证书，健康检查和二维码接口正常 |
 
-联合验证镜像 SHA-256：
+当前 `1.12.15.8` 家庭屏冒烟镜像 SHA-256：
 
 ```text
-c4e6397fb0576591d13f4832bdad45dc9193b13d20479fedd2dc345179634341
+5c400d068630dce5367f2014f2f6d661bf8e75902532aa2dae9cc89f6b6dd09b
 ```
 
 ## 八、许可证
