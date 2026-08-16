@@ -26,14 +26,31 @@ if ! grep -q "version = \"$VERSION\";" \
   exit 1
 fi
 
+cd "$WORKSPACE/nuttx"
+
+# Always rebuild every NuttX object and regenerate the configuration.  Keep the
+# application output variables out of the distclean environment: apps/Makefile
+# recursively removes BINDIR, so exporting the NuttX source root there would
+# delete the checkout itself.
+
+echo "Removing previous NuttX build outputs..."
+env -u APPSDIR -u APPSBINDIR -u BINDIR make distclean
+find "$WORKSPACE/nuttx" "$WORKSPACE/apps" -type f \
+  \( -name '*.o' -o -name '*.obj' -o -name '*.d' -o \
+     -name '.depend' -o -name '.built' \) -delete
+
+# distclean also removes downloaded application sources.  Integrate only
+# after it finishes so LVGL is restored and its NuttX compatibility patches
+# cannot be discarded by the cleanup step.
+
 "$SCRIPT_DIR/integrate.sh" "$WORKSPACE"
 
-cd "$WORKSPACE/nuttx"
 export APPSDIR="$WORKSPACE/apps"
 export APPSBINDIR="$WORKSPACE/apps"
 export BINDIR="$WORKSPACE/nuttx"
-./tools/configure.sh \
-  ../vendor/artinchip/boards/d13x-hengshan-pi/configs/nsh
+
+BOARD_CONFIG=../vendor/artinchip/boards/d13x-hengshan-pi/configs/nsh
+./tools/configure.sh "$BOARD_CONFIG"
 make -j"$JOBS"
 
 # The application executes from the 8 MiB PSRAM initialized by PBP.  Validate
@@ -43,7 +60,7 @@ PSRAM_BASE=$((0x40000000))
 PSRAM_END=$((0x40800000))
 ELF="$WORKSPACE/nuttx/nuttx"
 ENTRY=$(readelf -h "$ELF" |
-  awk '/Entry point address:/ { print $4 }')
+  awk '/Entry point address:|入口点地址/ { print $NF }')
 
 if ((ENTRY != PSRAM_BASE)); then
   printf 'error: NuttX entry is %s, expected 0x%08x\n' \

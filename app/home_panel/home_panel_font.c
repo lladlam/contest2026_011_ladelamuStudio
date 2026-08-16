@@ -28,6 +28,40 @@ static lv_fs_drv_t g_font_fs;
 static lv_font_t *g_runtime_font;
 static const lv_font_t *g_home_font = &home_panel_misans_18;
 
+static bool home_font_metrics_valid(const lv_font_t *font)
+{
+  static const uint32_t samples[] =
+  {
+    0x5bb6, /* 家 */
+    0x5ead, /* 庭 */
+    0x623f, /* 房 */
+    0x95f4, /* 间 */
+    0x8bbe, /* 设 */
+    0x7f6e, /* 置 */
+  };
+  lv_font_glyph_dsc_t glyph;
+  unsigned int index;
+
+  if (font == NULL || font->line_height < 16 || font->line_height > 40 ||
+      font->base_line < 0 || font->base_line >= font->line_height)
+    {
+      return false;
+    }
+
+  for (index = 0; index < sizeof(samples) / sizeof(samples[0]); index++)
+    {
+      memset(&glyph, 0, sizeof(glyph));
+      if (!lv_font_get_glyph_dsc(font, &glyph, samples[index], 0) ||
+          glyph.adv_w < 8 || glyph.adv_w > 32 ||
+          glyph.box_w == 0 || glyph.box_h == 0)
+        {
+          return false;
+        }
+    }
+
+  return true;
+}
+
 static void *home_font_open(lv_fs_drv_t *drv, const char *path,
                             lv_fs_mode_t mode)
 {
@@ -189,12 +223,25 @@ int home_panel_font_initialize(void)
       return -EINVAL;
     }
 
-  g_runtime_font->fallback = &home_panel_misans_18;
+  if (!home_font_metrics_valid(g_runtime_font))
+    {
+      syslog(LOG_ERR,
+             "[HOME][FONT] binary font metrics rejected line=%ld base=%ld\n",
+             (long)g_runtime_font->line_height,
+             (long)g_runtime_font->base_line);
+      lv_binfont_destroy(g_runtime_font);
+      g_runtime_font = NULL;
+      return -EBADMSG;
+    }
 
+  g_runtime_font->fallback = &home_panel_misans_18;
   g_home_font = g_runtime_font;
   syslog(LOG_INFO,
-         "[HOME][FONT] full MiSans bitmap ready bytes=%u bpp=1\n",
-         (unsigned int)BOARD_FONT_FLASH_SIZE);
+         "[HOME][FONT] full MiSans bitmap ready bytes=%u bpp=1 "
+         "line=%ld base=%ld\n",
+         (unsigned int)BOARD_FONT_FLASH_SIZE,
+         (long)g_runtime_font->line_height,
+         (long)g_runtime_font->base_line);
   return 0;
 }
 

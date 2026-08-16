@@ -12,8 +12,9 @@
 #define PROACTIVE_PROFILE_MAGIC_V1      0x48505231u /* HPR1 */
 #define PROACTIVE_PROFILE_MAGIC_V2      0x48505232u /* HPR2 */
 #define PROACTIVE_PROFILE_MAGIC_V4      0x48505234u /* HPR4 */
-#define PROACTIVE_PROFILE_MAGIC         0x48505235u /* HPR5 */
-#define PROACTIVE_PROFILE_VERSION       5u
+#define PROACTIVE_PROFILE_MAGIC_V5      0x48505235u /* HPR5 */
+#define PROACTIVE_PROFILE_MAGIC         0x48505236u /* HPR6 */
+#define PROACTIVE_PROFILE_VERSION       6u
 #define PROACTIVE_REPLAY_STEP_MS        3500u
 #define PROACTIVE_DEFAULT_SLEEP_MIN     (23u * 60u + 10u)
 #define PROACTIVE_COLD_WINDOW_MINUTES   60u
@@ -23,6 +24,9 @@
 #define PROACTIVE_MAX_ROUTINES          12u
 #define PROACTIVE_RECENT_EVENTS         16u
 #define PROACTIVE_TRIGGER_WINDOW_MS     (10u * 60u * 1000u)
+#define PROACTIVE_DUPLICATE_WINDOW_MS   5000u
+#define PROACTIVE_MAX_TRIGGER_LINKS     3u
+#define PROACTIVE_ADAPTIVE_WINDOW       16u
 #define PROACTIVE_MIN_TIME_DAYS         5u
 #define PROACTIVE_MIN_EVENT_OCCURRENCES 3u
 #define PROACTIVE_ROUTINE_THRESHOLD     65u
@@ -61,7 +65,7 @@ struct proactive_profile_v2_s
   uint32_t checksum;
 };
 
-struct proactive_routine_record_s
+struct proactive_routine_record_v5_s
 {
   uint32_t routine_id;
   uint32_t trigger_device_hash;
@@ -86,6 +90,34 @@ struct proactive_routine_record_s
   uint8_t reserved;
 };
 
+struct proactive_routine_record_s
+{
+  uint32_t routine_id;
+  uint32_t trigger_device_hash;
+  uint32_t action_device_hash;
+  uint32_t last_observation_day;
+  uint32_t last_executed_day;
+  int32_t trigger_value;
+  int32_t action_value;
+  uint16_t trigger_siid;
+  uint16_t trigger_piid;
+  uint16_t action_siid;
+  uint16_t action_piid;
+  uint16_t mean_shifted_minute;
+  uint16_t mean_deviation_minutes;
+  uint16_t mean_delay_seconds;
+  uint16_t observation_count;
+  uint16_t accepted_count;
+  uint16_t rejected_count;
+  uint8_t execution_success_count;
+  uint8_t execution_failure_count;
+  uint8_t consecutive_rejections;
+  uint8_t trigger_kind;
+  uint8_t action_kind;
+  uint8_t flags;
+  uint8_t reserved;
+};
+
 struct proactive_profile_v4_s
 {
   uint32_t magic;
@@ -104,7 +136,29 @@ struct proactive_profile_v4_s
   uint32_t next_routine_id;
   uint16_t cloud_budget_count;
   uint16_t routine_count;
-  struct proactive_routine_record_s routines[8];
+  struct proactive_routine_record_v5_s routines[8];
+  uint32_t checksum;
+};
+
+struct proactive_profile_v5_s
+{
+  uint32_t magic;
+  uint16_t version;
+  uint16_t size;
+  uint32_t history_days;
+  uint32_t feedback_count;
+  uint32_t accepted_count;
+  uint32_t ignored_count;
+  uint32_t sleep_sample_count;
+  uint32_t sleep_shifted_minute_total;
+  uint32_t reminder_cooldown_days;
+  uint32_t last_observation_day;
+  uint32_t cloud_budget_day;
+  uint32_t last_learning_day;
+  uint32_t next_routine_id;
+  uint16_t cloud_budget_count;
+  uint16_t routine_count;
+  struct proactive_routine_record_v5_s routines[PROACTIVE_MAX_ROUTINES];
   uint32_t checksum;
 };
 
@@ -359,6 +413,7 @@ static unsigned int proactive_routine_confidence(
   unsigned int feedback;
   unsigned int consistency;
   unsigned int penalty;
+  unsigned int reliability;
   unsigned int score;
 
   evidence = routine->observation_count *
@@ -368,18 +423,28 @@ static unsigned int proactive_routine_confidence(
       evidence = 60;
     }
 
-  feedback = feedback_count == 0 ? 10 :
-             routine->accepted_count * 25u / feedback_count;
+  /* A small beta prior prevents one early acceptance from overpowering
+   * observed consistency.  Execution failures are kept separate from user
+   * feedback because they describe actuator reliability, not preference.
+   */
+
+  feedback = (routine->accepted_count + 2u) * 25u /
+             (feedback_count + 4u);
   consistency = routine->mean_deviation_minutes <= 15 ? 15 :
                 routine->mean_deviation_minutes <= 30 ? 10 :
                 routine->mean_deviation_minutes <= 60 ? 5 : 0;
-  penalty = routine->rejected_count * 8u;
-  if (penalty > 30)
+  reliability = (routine->execution_success_count + 2u) * 10u /
+                (routine->execution_success_count +
+                 routine->execution_failure_count + 4u);
+  penalty = routine->rejected_count * 5u +
+            routine->consecutive_rejections * 8u +
+            routine->execution_failure_count * 2u;
+  if (penalty > 45)
     {
-      penalty = 30;
+      penalty = 45;
     }
 
-  score = evidence + feedback + consistency;
+  score = evidence + feedback + consistency + reliability;
   return score > penalty ? score - penalty : 0;
 }
 
@@ -566,6 +631,14 @@ static void proactive_update_average(uint16_t *average,
       *average = sample;
       return;
     }
+  /* Keep a finite memory after warm-up so a changed household habit can
+   * converge again instead of being pinned forever by old observations.
+   */
+
+  if (count > PROACTIVE_ADAPTIVE_WINDOW)
+    {
+      count = PROACTIVE_ADAPTIVE_WINDOW;
+    }
   difference = (int)sample - (int)*average;
   next = (int)*average + difference / (int)count;
   if (next < 0)
@@ -660,6 +733,34 @@ static void proactive_learn_routine(
                                routine->observation_count);
     }
   proactive_mark_routine_updated(index, HOME_PROACTIVE_UPDATE_OBSERVATION);
+}
+
+static bool proactive_event_duplicate(
+  const struct home_proactive_event_s *event)
+{
+  unsigned int index;
+
+  for (index = g_proactive.recent_event_count; index > 0; index--)
+    {
+      const struct home_proactive_event_s *recent =
+        &g_proactive.recent_events[index - 1];
+
+      if (recent->day_ordinal != event->day_ordinal ||
+          (uint32_t)(event->now_ms - recent->now_ms) >
+            PROACTIVE_DUPLICATE_WINDOW_MS)
+        {
+          break;
+        }
+      if (recent->device_hash == event->device_hash &&
+          recent->siid == event->siid && recent->piid == event->piid &&
+          recent->kind == event->kind &&
+          proactive_trigger_value(recent->kind, recent->value) ==
+            proactive_trigger_value(event->kind, event->value))
+        {
+          return true;
+        }
+    }
+  return false;
 }
 
 static void proactive_activate_routine(unsigned int index,
@@ -923,11 +1024,17 @@ void home_proactive_observe_event(
   const struct home_proactive_event_s *event)
 {
   unsigned int index;
+  unsigned int linked_triggers = 0;
 
   if (event == NULL || event->device_hash == 0 ||
       event->day_ordinal == 0 ||
       event->minute_of_day >= 24u * 60u ||
       event->kind > HOME_PROACTIVE_EVENT_ONLINE)
+    {
+      return;
+    }
+
+  if (!event->self_generated && proactive_event_duplicate(event))
     {
       return;
     }
@@ -976,6 +1083,7 @@ void home_proactive_observe_event(
         {
           routine->accepted_count++;
         }
+      routine->consecutive_rejections = 0;
       if (g_proactive.profile.accepted_count < UINT32_MAX)
         {
           g_proactive.profile.accepted_count++;
@@ -1033,6 +1141,11 @@ void home_proactive_observe_event(
           if (!duplicate)
             {
               proactive_learn_routine(candidate, event);
+              linked_triggers++;
+              if (linked_triggers >= PROACTIVE_MAX_TRIGGER_LINKS)
+                {
+                  break;
+                }
             }
         }
       proactive_bump_revision();
@@ -1180,7 +1293,11 @@ void home_proactive_feedback(enum home_proactive_feedback_e feedback)
             {
               routine->accepted_count++;
             }
-          g_proactive.profile.accepted_count++;
+          routine->consecutive_rejections = 0;
+          if (g_proactive.profile.accepted_count < UINT32_MAX)
+            {
+              g_proactive.profile.accepted_count++;
+            }
           if (feedback == HOME_PROACTIVE_ENABLE_AUTOMATION)
             {
               routine->flags |= ROUTINE_FLAG_AUTOMATION;
@@ -1192,9 +1309,23 @@ void home_proactive_feedback(enum home_proactive_feedback_e feedback)
             {
               routine->rejected_count++;
             }
-          g_proactive.profile.ignored_count++;
+          if (routine->consecutive_rejections < UINT8_MAX)
+            {
+              routine->consecutive_rejections++;
+            }
+          if (g_proactive.profile.ignored_count < UINT32_MAX)
+            {
+              g_proactive.profile.ignored_count++;
+            }
+          if ((routine->flags & ROUTINE_FLAG_AUTOMATION) != 0)
+            {
+              routine->flags &= (uint8_t)~ROUTINE_FLAG_AUTOMATION;
+            }
         }
-      g_proactive.profile.feedback_count++;
+      if (g_proactive.profile.feedback_count < UINT32_MAX)
+        {
+          g_proactive.profile.feedback_count++;
+        }
       routine->last_executed_day = g_proactive.context.day_ordinal;
       proactive_mark_routine_updated(
         g_proactive.active_routine,
@@ -1237,9 +1368,30 @@ void home_proactive_automation_result(bool success)
 
   routine = &g_proactive.profile.routines[g_proactive.active_routine];
   routine->last_executed_day = g_proactive.context.day_ordinal;
-  proactive_mark_routine_updated(
-    g_proactive.active_routine, HOME_PROACTIVE_UPDATE_EXECUTION_RESULT);
-  (void)success;
+  if (success)
+    {
+      if (routine->execution_success_count < UINT8_MAX)
+        {
+          routine->execution_success_count++;
+        }
+      proactive_mark_routine_updated(
+        g_proactive.active_routine,
+        HOME_PROACTIVE_UPDATE_EXECUTION_SUCCEEDED);
+    }
+  else
+    {
+      if (routine->execution_failure_count < UINT8_MAX)
+        {
+          routine->execution_failure_count++;
+        }
+      if (routine->execution_failure_count >= 3)
+        {
+          routine->flags &= (uint8_t)~ROUTINE_FLAG_AUTOMATION;
+        }
+      proactive_mark_routine_updated(
+        g_proactive.active_routine,
+        HOME_PROACTIVE_UPDATE_EXECUTION_FAILED);
+    }
   g_proactive.automation_inflight = false;
   g_proactive.active_routine = -1;
   g_proactive.pending_routine = -1;
@@ -1289,6 +1441,81 @@ int home_proactive_disable_automation(uint32_t action_device_hash,
           return 0;
         }
     }
+  return -ENOENT;
+}
+
+unsigned int home_proactive_list_automations(
+  struct home_proactive_automation_s *automations,
+  unsigned int capacity)
+{
+  unsigned int index;
+  unsigned int count = 0;
+
+  for (index = 0; index < g_proactive.profile.routine_count; index++)
+    {
+      const struct proactive_routine_record_s *routine =
+        &g_proactive.profile.routines[index];
+      struct home_proactive_automation_s *item;
+
+      if ((routine->flags & ROUTINE_FLAG_AUTOMATION) == 0)
+        {
+          continue;
+        }
+      if (automations == NULL || count >= capacity)
+        {
+          count++;
+          continue;
+        }
+
+      item = &automations[count++];
+      memset(item, 0, sizeof(*item));
+      item->routine_id = routine->routine_id;
+      item->trigger_device_hash = routine->trigger_device_hash;
+      item->action_device_hash = routine->action_device_hash;
+      item->action_siid = routine->action_siid;
+      item->action_piid = routine->action_piid;
+      item->mean_minute_of_day =
+        routine->mean_shifted_minute % (24u * 60u);
+      item->mean_delay_seconds = routine->mean_delay_seconds;
+      item->action_value = routine->action_value;
+      item->action_kind =
+        (enum home_proactive_event_kind_e)routine->action_kind;
+      item->event_triggered = routine->trigger_device_hash != 0;
+    }
+
+  return count;
+}
+
+int home_proactive_remove_automation(uint32_t routine_id)
+{
+  unsigned int index;
+
+  if (routine_id == 0)
+    {
+      return -EINVAL;
+    }
+
+  for (index = 0; index < g_proactive.profile.routine_count; index++)
+    {
+      struct proactive_routine_record_s *routine =
+        &g_proactive.profile.routines[index];
+
+      if (routine->routine_id != routine_id)
+        {
+          continue;
+        }
+      if ((routine->flags & ROUTINE_FLAG_AUTOMATION) == 0)
+        {
+          return -EALREADY;
+        }
+
+      routine->flags &= (uint8_t)~ROUTINE_FLAG_AUTOMATION;
+      proactive_mark_routine_updated(
+        (int)index, HOME_PROACTIVE_UPDATE_AUTOMATION_DISABLED);
+      proactive_bump_revision();
+      return 0;
+    }
+
   return -ENOENT;
 }
 
@@ -1354,6 +1581,12 @@ void home_proactive_get_snapshot(struct home_proactive_snapshot_s *snapshot)
       snapshot->learning_deviation_minutes =
         learned->mean_deviation_minutes;
       snapshot->learning_delay_seconds = learned->mean_delay_seconds;
+      snapshot->learning_execution_successes =
+        learned->execution_success_count;
+      snapshot->learning_execution_failures =
+        learned->execution_failure_count;
+      snapshot->learning_consecutive_rejections =
+        learned->consecutive_rejections;
       snapshot->learning_kind =
         learned->trigger_device_hash == 0 ?
           HOME_PROACTIVE_CANDIDATE_TIME_ROUTINE :
@@ -1514,6 +1747,7 @@ static bool proactive_profile_valid(
           routine->action_kind > HOME_PROACTIVE_EVENT_ONLINE ||
           routine->trigger_kind > HOME_PROACTIVE_EVENT_ONLINE ||
           routine->observation_count == 0 ||
+          routine->consecutive_rejections > routine->rejected_count ||
           routine->mean_shifted_minute >= 36u * 60u ||
           routine->mean_deviation_minutes > 12u * 60u ||
           routine->mean_delay_seconds > 3600)
@@ -1560,6 +1794,33 @@ static bool proactive_migrate_v2(
   return true;
 }
 
+static void proactive_copy_legacy_routine(
+  struct proactive_routine_record_s *target,
+  const struct proactive_routine_record_v5_s *source)
+{
+  memset(target, 0, sizeof(*target));
+  target->routine_id = source->routine_id;
+  target->trigger_device_hash = source->trigger_device_hash;
+  target->action_device_hash = source->action_device_hash;
+  target->last_observation_day = source->last_observation_day;
+  target->last_executed_day = source->last_executed_day;
+  target->trigger_value = source->trigger_value;
+  target->action_value = source->action_value;
+  target->trigger_siid = source->trigger_siid;
+  target->trigger_piid = source->trigger_piid;
+  target->action_siid = source->action_siid;
+  target->action_piid = source->action_piid;
+  target->mean_shifted_minute = source->mean_shifted_minute;
+  target->mean_deviation_minutes = source->mean_deviation_minutes;
+  target->mean_delay_seconds = source->mean_delay_seconds;
+  target->observation_count = source->observation_count;
+  target->accepted_count = source->accepted_count;
+  target->rejected_count = source->rejected_count;
+  target->trigger_kind = source->trigger_kind;
+  target->action_kind = source->action_kind;
+  target->flags = source->flags;
+}
+
 static bool proactive_migrate_v4(
   const struct proactive_profile_v4_s *legacy,
   struct proactive_profile_record_s *profile)
@@ -1590,8 +1851,57 @@ static bool proactive_migrate_v4(
   profile->next_routine_id = legacy->next_routine_id;
   profile->cloud_budget_count = legacy->cloud_budget_count;
   profile->routine_count = legacy->routine_count;
-  memcpy(profile->routines, legacy->routines,
-         sizeof(legacy->routines));
+  for (checksum = 0; checksum < legacy->routine_count; checksum++)
+    {
+      const struct proactive_routine_record_v5_s *source =
+        &legacy->routines[checksum];
+      struct proactive_routine_record_s *target =
+        &profile->routines[checksum];
+
+      proactive_copy_legacy_routine(target, source);
+    }
+  profile->checksum = proactive_crc32(
+    profile, offsetof(struct proactive_profile_record_s, checksum));
+  return proactive_profile_valid(profile);
+}
+
+static bool proactive_migrate_v5(
+  const struct proactive_profile_v5_s *legacy,
+  struct proactive_profile_record_s *profile)
+{
+  uint32_t checksum;
+  unsigned int index;
+
+  checksum = proactive_crc32(
+    legacy, offsetof(struct proactive_profile_v5_s, checksum));
+  if (legacy->magic != PROACTIVE_PROFILE_MAGIC_V5 ||
+      legacy->version != 5 || legacy->size != sizeof(*legacy) ||
+      legacy->checksum != checksum ||
+      legacy->routine_count > PROACTIVE_MAX_ROUTINES)
+    {
+      return false;
+    }
+
+  proactive_profile_defaults(profile);
+  profile->history_days = legacy->history_days;
+  profile->feedback_count = legacy->feedback_count;
+  profile->accepted_count = legacy->accepted_count;
+  profile->ignored_count = legacy->ignored_count;
+  profile->sleep_sample_count = legacy->sleep_sample_count;
+  profile->sleep_shifted_minute_total =
+    legacy->sleep_shifted_minute_total;
+  profile->reminder_cooldown_days = legacy->reminder_cooldown_days;
+  profile->last_observation_day = legacy->last_observation_day;
+  profile->cloud_budget_day = legacy->cloud_budget_day;
+  profile->last_learning_day = legacy->last_learning_day;
+  profile->next_routine_id = legacy->next_routine_id;
+  profile->cloud_budget_count = legacy->cloud_budget_count;
+  profile->routine_count = legacy->routine_count;
+  for (index = 0; index < legacy->routine_count; index++)
+    {
+      proactive_copy_legacy_routine(&profile->routines[index],
+                                    &legacy->routines[index]);
+    }
   profile->checksum = proactive_crc32(
     profile, offsetof(struct proactive_profile_record_s, checksum));
   return proactive_profile_valid(profile);
@@ -1650,6 +1960,14 @@ int home_proactive_import_profile(const void *buffer, size_t length)
     {
       memcpy(&profile, buffer, sizeof(profile));
       valid = proactive_profile_valid(&profile);
+    }
+  else if (length == sizeof(struct proactive_profile_v5_s))
+    {
+      struct proactive_profile_v5_s legacy;
+
+      memcpy(&legacy, buffer, sizeof(legacy));
+      valid = proactive_migrate_v5(&legacy, &profile);
+      memset(&legacy, 0, sizeof(legacy));
     }
   else if (length == sizeof(struct proactive_profile_v4_s))
     {

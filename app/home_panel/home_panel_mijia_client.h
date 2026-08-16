@@ -53,6 +53,77 @@ enum home_panel_agent_policy_e
   HOME_PANEL_AGENT_POLICY_EXECUTE_LOCAL_CANDIDATE
 };
 
+#define HOME_PANEL_CLOUD_MAX_ACTIONS 8
+
+enum home_panel_cloud_proposal_kind_e
+{
+  HOME_PANEL_CLOUD_ONE_TIME = 0,
+  HOME_PANEL_CLOUD_AUTOMATION
+};
+
+enum home_panel_cloud_proposal_status_e
+{
+  HOME_PANEL_CLOUD_PROPOSAL_NONE = 0,
+  HOME_PANEL_CLOUD_PROPOSAL_AWAITING_CONFIRMATION,
+  HOME_PANEL_CLOUD_PROPOSAL_GENERATING_PLAN,
+  HOME_PANEL_CLOUD_PROPOSAL_PLAN_READY,
+  HOME_PANEL_CLOUD_PROPOSAL_ACCEPTED,
+  HOME_PANEL_CLOUD_PROPOSAL_COMPLETED,
+  HOME_PANEL_CLOUD_PROPOSAL_FAILED,
+  HOME_PANEL_CLOUD_PROPOSAL_INSTALLED,
+  HOME_PANEL_CLOUD_PROPOSAL_DISMISSED
+};
+
+enum home_panel_cloud_trigger_kind_e
+{
+  HOME_PANEL_CLOUD_TRIGGER_NONE = 0,
+  HOME_PANEL_CLOUD_TRIGGER_TIME,
+  HOME_PANEL_CLOUD_TRIGGER_PROPERTY
+};
+
+struct home_panel_cloud_action_s
+{
+  uint32_t device_key;
+  char semantic[33];
+  uint16_t siid;
+  uint16_t piid;
+  int value;
+  bool value_is_boolean;
+  char purpose[80];
+};
+
+struct home_panel_cloud_trigger_s
+{
+  enum home_panel_cloud_trigger_kind_e kind;
+  uint32_t device_key;
+  char semantic[33];
+  uint16_t minute_of_day;
+  uint16_t window_minutes;
+  uint16_t delay_seconds;
+  uint8_t days_mask;
+  int value;
+  bool value_is_boolean;
+};
+
+struct home_panel_cloud_proposal_s
+{
+  uint32_t revision;
+  uint32_t update_revision;
+  uint64_t expires_at;
+  enum home_panel_cloud_proposal_kind_e kind;
+  enum home_panel_cloud_proposal_status_e status;
+  bool valid;
+  bool requires_confirmation;
+  unsigned int confidence;
+  unsigned int intent_count;
+  unsigned int action_count;
+  char proposal_id[65];
+  char purpose[160];
+  char explanation[256];
+  struct home_panel_cloud_trigger_s trigger;
+  struct home_panel_cloud_action_s actions[HOME_PANEL_CLOUD_MAX_ACTIONS];
+};
+
 struct home_panel_agent_request_s
 {
   uint32_t context_revision;
@@ -89,6 +160,9 @@ struct home_panel_agent_learning_request_s
   unsigned int mean_minute_of_day;
   unsigned int mean_deviation_minutes;
   unsigned int mean_delay_seconds;
+  unsigned int execution_success_count;
+  unsigned int execution_failure_count;
+  unsigned int consecutive_rejections;
   bool automation_enabled;
 };
 
@@ -172,6 +246,11 @@ int home_panel_mijia_request_number_property(const char *did,
                                               uint16_t siid,
                                               uint16_t piid,
                                               int value);
+int home_panel_mijia_request_action(const char *did,
+                                    const char *device_name,
+                                    const char *action_name,
+                                    uint16_t siid,
+                                    uint16_t aiid);
 int home_panel_mijia_request_scene(const char *scene_id,
                                    const char *scene_name);
 int home_panel_mijia_request_agent_analysis(
@@ -180,6 +259,16 @@ int home_panel_mijia_request_agent_learning(
   const struct home_panel_agent_learning_request_s *request);
 void home_panel_mijia_get_agent_snapshot(
   struct home_panel_agent_snapshot_s *snapshot);
+int home_panel_mijia_request_board_state(
+  const struct home_panel_family_model_s *model,
+  uint32_t board_revision, uint32_t proposal_after,
+  uint64_t generated_at, unsigned int minute_of_day);
+int home_panel_mijia_request_board_proposal(uint32_t after);
+int home_panel_mijia_confirm_board_proposal(const char *proposal_id);
+int home_panel_mijia_feedback_board_proposal(const char *proposal_id,
+                                              const char *result);
+void home_panel_mijia_get_board_proposal(
+  struct home_panel_cloud_proposal_s *proposal);
 void home_panel_mijia_get_command_snapshot(
   struct home_panel_mijia_command_snapshot_s *snapshot);
 int home_panel_mijia_copy_qr(uint32_t revision, void *buffer,

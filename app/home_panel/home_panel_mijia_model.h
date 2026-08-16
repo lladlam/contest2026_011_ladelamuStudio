@@ -13,11 +13,21 @@
 #define HOME_PANEL_MAX_SCENES   8
 #define HOME_PANEL_MAX_CONTROLS 12
 #define HOME_PANEL_MAX_OBSERVABLES 24
+#define HOME_PANEL_MAX_ACTIONS 8
+#define HOME_PANEL_MAX_OPTIONS 8
 
 enum home_panel_control_type_e
 {
   HOME_PANEL_CONTROL_BOOLEAN = 0,
-  HOME_PANEL_CONTROL_NUMBER
+  HOME_PANEL_CONTROL_NUMBER,
+  HOME_PANEL_CONTROL_ENUM,
+  HOME_PANEL_CONTROL_TEXT
+};
+
+struct home_panel_control_option_s
+{
+  int value;
+  char label[24];
 };
 
 struct home_panel_control_s
@@ -33,6 +43,8 @@ struct home_panel_control_s
   int minimum;
   int maximum;
   int step;
+  unsigned int option_count;
+  struct home_panel_control_option_s options[HOME_PANEL_MAX_OPTIONS];
 };
 
 struct home_panel_observable_s
@@ -45,6 +57,16 @@ struct home_panel_observable_s
   bool boolean_value;
   bool notifiable;
   int value;
+  char text[40];
+};
+
+struct home_panel_action_s
+{
+  char name[24];
+  char display_name[40];
+  uint16_t siid;
+  uint16_t aiid;
+  bool executable;
 };
 
 struct home_panel_device_s
@@ -83,6 +105,8 @@ struct home_panel_device_s
   unsigned int observable_count;
   struct home_panel_observable_s
     observables[HOME_PANEL_MAX_OBSERVABLES];
+  unsigned int action_count;
+  struct home_panel_action_s actions[HOME_PANEL_MAX_ACTIONS];
 };
 
 struct home_panel_room_s

@@ -190,7 +190,8 @@ GitHub Actions 和开发板实机输出作为最终验收依据。完整对话�
 | [ArtInChip Luban-Lite](https://gitee.com/artinchip/luban-lite) | D13x 启动、时钟、显示和外设寄存器参考 | 参考代码 | 不作为独立运行时库；使用时遵循其上游许可声明 |
 
 服务端使用 [lladlam/mijia](https://github.com/lladlam/mijia) 维护的独立
-`mijia-api` 工作副本，生产实例部署在 `https://mi.lladlam.top`。它与本仓库、
+`mijia-api` 工作副本。公网服务器已停用，当前实例运行在同一局域网的开发机
+`http://192.168.1.24:8123`；断网后已确认自动化继续由板端执行。它与本仓库、
 D13x 固件和 Release 产物相互独立，避免 GPL 服务端实现与 Apache-2.0 固件发生
 代码链接。
 
@@ -220,7 +221,7 @@ LVGL BinFont 读取，不在运行时解析 TTF 或执行浮点光栅化。BinFo
 | 系统定时器 | 已验证 | CORET 4 MHz 架构定时器持续推进系统时钟 |
 | GMAC0 以太网 | 已验证 | RMII 100M 全双工，DHCP、网关及外网连通正常 |
 | 米家扫码登录 | 已验证 | 米家 App 扫码确认、令牌领取、家庭与设备统计正常 |
-| 米家服务端 | 已验证 | `mi.lladlam.top` 使用有效 HTTPS 证书，健康检查和二维码接口正常 |
+| 本机米家服务端 | 已验证 | `192.168.1.24:8123` 的健康检查、扫码登录、同步和主动智能代理正常 |
 
 当前 `1.12.15.8` 家庭屏冒烟镜像 SHA-256：
 

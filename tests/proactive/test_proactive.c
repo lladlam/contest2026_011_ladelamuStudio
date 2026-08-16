@@ -1,6 +1,7 @@
 #include "home_panel_proactive.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -477,6 +478,7 @@ static void test_event_routine_can_become_offline_automation(void)
   size_t profile_size = 0;
   unsigned int day;
   uint32_t event_routine_id;
+  struct home_proactive_automation_s automation[2];
 
   context.lights_on = 0;
   context.target_available = false;
@@ -523,6 +525,12 @@ static void test_event_routine_can_become_offline_automation(void)
   assert(snapshot.learning_automation_enabled);
   assert(snapshot.learning_update_kind ==
          HOME_PROACTIVE_UPDATE_AUTOMATION_ENABLED);
+  memset(automation, 0, sizeof(automation));
+  assert(home_proactive_list_automations(automation, 2) == 1);
+  assert(automation[0].routine_id == event_routine_id);
+  assert(automation[0].event_triggered);
+  assert(automation[0].action_device_hash == 0x200u);
+  assert(automation[0].mean_delay_seconds == 60);
 
   trigger = test_boolean_event(5, 18 * 60, 5000000u,
                                0x100u, true, false);
@@ -545,6 +553,19 @@ static void test_event_routine_can_become_offline_automation(void)
   assert(home_proactive_import_profile(profile, profile_size) == 0);
   home_proactive_get_snapshot(&snapshot);
   assert(snapshot.automation_count == 1);
+  assert(home_proactive_list_automations(automation, 2) == 1);
+
+  assert(home_proactive_remove_automation(event_routine_id) == 0);
+  assert(home_proactive_remove_automation(event_routine_id) == -EALREADY);
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.automation_count == 0);
+  assert(home_proactive_list_automations(automation, 2) == 0);
+  assert(home_proactive_export_profile(profile, sizeof(profile),
+                                       &profile_size) == 0);
+  home_proactive_initialize();
+  assert(home_proactive_import_profile(profile, profile_size) == 0);
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.automation_count == 0);
 }
 
 static void test_numeric_behavior_triggers_same_day_learning(void)
@@ -768,6 +789,125 @@ static void test_learning_queue_preserves_multiple_routines(void)
   assert(second.learning_routine_id != first.learning_routine_id);
 }
 
+static void test_duplicate_status_does_not_inflate_learning(void)
+{
+  struct home_proactive_context_s context = test_context();
+  struct home_proactive_snapshot_s snapshot;
+  struct home_proactive_event_s event;
+
+  context.lights_on = 0;
+  context.target_available = false;
+  home_proactive_initialize();
+  home_proactive_set_context(&context);
+  event = test_boolean_event(1, 18 * 60, 100000u,
+                             0xa01u, true, true);
+  home_proactive_observe_event(&event);
+  event.now_ms += 1000u;
+  home_proactive_observe_event(&event);
+  event.now_ms += 1000u;
+  home_proactive_observe_event(&event);
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.routine_count == 1);
+  assert(snapshot.routine_observations == 1);
+}
+
+static void test_action_links_only_nearest_relevant_triggers(void)
+{
+  struct home_proactive_context_s context = test_context();
+  struct home_proactive_snapshot_s snapshot;
+  struct home_proactive_event_s event;
+  unsigned int index;
+
+  context.lights_on = 0;
+  context.target_available = false;
+  home_proactive_initialize();
+  home_proactive_set_context(&context);
+  for (index = 0; index < 8; index++)
+    {
+      event = test_boolean_event(1, 18 * 60,
+                                 100000u + index * 6000u,
+                                 0xb00u + index, true, false);
+      home_proactive_observe_event(&event);
+    }
+  event = test_boolean_event(1, 18 * 60, 160000u,
+                             0xb20u, true, true);
+  home_proactive_observe_event(&event);
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.routine_count == 4);
+  assert(snapshot.routine_observations == 4);
+}
+
+static void test_repeated_automation_failure_opens_circuit(void)
+{
+  struct home_proactive_context_s context = test_context();
+  struct home_proactive_snapshot_s snapshot;
+  struct home_proactive_event_s trigger;
+  struct home_proactive_event_s action;
+  unsigned int day;
+  uint32_t routine_id = 0;
+
+  context.lights_on = 0;
+  context.target_available = false;
+  home_proactive_initialize();
+  home_proactive_set_context(&context);
+  for (day = 1; day <= 3; day++)
+    {
+      trigger = test_boolean_event(day, 18 * 60, day * 1000000u,
+                                   0xc01u, true, false);
+      action = test_boolean_event(day, 18 * 60,
+                                  day * 1000000u + 10000u,
+                                  0xc02u, true, true);
+      home_proactive_observe_event(&trigger);
+      home_proactive_observe_event(&action);
+    }
+
+  context.minute_of_day = 18 * 60;
+  for (day = 4; day <= 6; day++)
+    {
+      context.day_ordinal = day;
+      home_proactive_set_context(&context);
+      trigger = test_boolean_event(day, 18 * 60, day * 1000000u,
+                                   0xc01u, true, false);
+      home_proactive_observe_event(&trigger);
+      home_proactive_tick(day * 1000000u + 10000u);
+      home_proactive_get_snapshot(&snapshot);
+      if (day == 4)
+        {
+          routine_id = snapshot.routine_id;
+          home_proactive_feedback(HOME_PROACTIVE_ENABLE_AUTOMATION);
+          continue;
+        }
+      assert(snapshot.automation_enabled);
+      assert(home_proactive_claim_automation(snapshot.decision_key));
+      home_proactive_automation_result(false);
+    }
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.automation_count == 1);
+
+  context.day_ordinal = 7;
+  home_proactive_set_context(&context);
+  trigger = test_boolean_event(7, 18 * 60, 7000000u,
+                               0xc01u, true, false);
+  home_proactive_observe_event(&trigger);
+  home_proactive_tick(7010000u);
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.automation_enabled);
+  assert(home_proactive_claim_automation(snapshot.decision_key));
+  home_proactive_automation_result(false);
+  home_proactive_get_snapshot(&snapshot);
+  assert(snapshot.automation_count == 0);
+  while (snapshot.learning_routine_id != routine_id)
+    {
+      assert(snapshot.learning_revision != 0);
+      assert(home_proactive_ack_learning(snapshot.learning_revision,
+                                         snapshot.learning_routine_id));
+      home_proactive_get_snapshot(&snapshot);
+    }
+  assert(snapshot.learning_execution_failures == 3);
+  assert(snapshot.learning_update_kind ==
+         HOME_PROACTIVE_UPDATE_EXECUTION_FAILED);
+}
+
 int main(void)
 {
   test_cold_start();
@@ -790,6 +930,9 @@ int main(void)
   test_self_generated_behavior_does_not_trigger();
   test_v4_profile_migrates_without_losing_routine();
   test_learning_queue_preserves_multiple_routines();
+  test_duplicate_status_does_not_inflate_learning();
+  test_action_links_only_nearest_relevant_triggers();
+  test_repeated_automation_failure_opens_circuit();
   puts("proactive tests: PASS");
   return 0;
 }

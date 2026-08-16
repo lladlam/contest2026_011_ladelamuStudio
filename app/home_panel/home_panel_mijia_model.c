@@ -147,6 +147,41 @@ static bool model_control_range(cJSON *property,
   return true;
 }
 
+static unsigned int model_control_options(
+  cJSON *property, struct home_panel_control_s *control)
+{
+  cJSON *options;
+  cJSON *option;
+
+  options = cJSON_GetObjectItemCaseSensitive(property, "ui_options");
+  if (!cJSON_IsArray(options))
+    {
+      return 0;
+    }
+
+  cJSON_ArrayForEach(option, options)
+    {
+      struct home_panel_control_option_s *target;
+      cJSON *value;
+      const char *label;
+
+      if (control->option_count >= HOME_PANEL_MAX_OPTIONS)
+        {
+          break;
+        }
+      value = cJSON_GetObjectItemCaseSensitive(option, "value");
+      label = model_string(option, "label");
+      if (!cJSON_IsNumber(value) || label == NULL || label[0] == '\0')
+        {
+          continue;
+        }
+      target = &control->options[control->option_count++];
+      target->value = value->valueint;
+      model_copy(target->label, sizeof(target->label), label);
+    }
+  return control->option_count;
+}
+
 static void model_parse_observables(cJSON *properties,
                                     struct home_panel_device_s *device)
 {
@@ -170,13 +205,16 @@ static void model_parse_observables(cJSON *properties,
       value = cJSON_GetObjectItemCaseSensitive(property, "current_value");
       notifiable = cJSON_GetObjectItemCaseSensitive(property, "notifiable");
       if (name == NULL || name[0] == '\0' ||
-          (!cJSON_IsBool(value) && !cJSON_IsNumber(value)))
+          (!cJSON_IsBool(value) && !cJSON_IsNumber(value) &&
+           !cJSON_IsString(value)))
         {
           continue;
         }
 
       observable = &device->observables[device->observable_count];
       model_copy(observable->name, sizeof(observable->name), name);
+      model_copy(observable->text, sizeof(observable->text),
+                 model_string(property, "display_value"));
       model_property_ids(property, &observable->siid, &observable->piid);
       observable->notifiable = cJSON_IsTrue(notifiable);
       if (cJSON_IsBool(value) ||
@@ -188,9 +226,18 @@ static void model_parse_observables(cJSON *properties,
         }
       else
         {
-          observable->type = HOME_PANEL_CONTROL_NUMBER;
           observable->has_value = true;
-          observable->value = value->valueint;
+          if (cJSON_IsString(value))
+            {
+              observable->type = HOME_PANEL_CONTROL_TEXT;
+              model_copy(observable->text, sizeof(observable->text),
+                         value->valuestring);
+            }
+          else
+            {
+              observable->type = HOME_PANEL_CONTROL_NUMBER;
+              observable->value = value->valueint;
+            }
         }
       device->observable_count++;
     }
@@ -245,10 +292,17 @@ static void model_parse_controls(cJSON *properties,
           control->type = HOME_PANEL_CONTROL_NUMBER;
           control->has_value = true;
           control->value = value->valueint;
-          control->has_range = model_control_range(property, control);
-          if (!control->has_range)
+          if (model_control_options(property, control) > 0)
             {
-              continue;
+              control->type = HOME_PANEL_CONTROL_ENUM;
+            }
+          else
+            {
+              control->has_range = model_control_range(property, control);
+              if (!control->has_range)
+                {
+                  continue;
+                }
             }
         }
       else
@@ -257,6 +311,57 @@ static void model_parse_controls(cJSON *properties,
         }
 
       device->control_count++;
+    }
+}
+
+static void model_parse_actions(cJSON *actions,
+                                struct home_panel_device_s *device)
+{
+  cJSON *action;
+
+  if (!cJSON_IsArray(actions))
+    {
+      return;
+    }
+
+  cJSON_ArrayForEach(action, actions)
+    {
+      struct home_panel_action_s *target;
+      const char *name;
+      const char *display_name;
+      cJSON *item;
+
+      if (device->action_count >= HOME_PANEL_MAX_ACTIONS)
+        {
+          break;
+        }
+      name = model_string(action, "name");
+      display_name = model_string(action, "display_name");
+      item = cJSON_GetObjectItemCaseSensitive(action, "executable");
+      if (name == NULL || name[0] == '\0' || !cJSON_IsTrue(item))
+        {
+          continue;
+        }
+      target = &device->actions[device->action_count];
+      item = cJSON_GetObjectItemCaseSensitive(action, "siid");
+      if (!cJSON_IsNumber(item) || item->valueint <= 0 ||
+          item->valueint > 65535)
+        {
+          continue;
+        }
+      target->siid = (uint16_t)item->valueint;
+      item = cJSON_GetObjectItemCaseSensitive(action, "aiid");
+      if (!cJSON_IsNumber(item) || item->valueint <= 0 ||
+          item->valueint > 65535)
+        {
+          continue;
+        }
+      target->aiid = (uint16_t)item->valueint;
+      model_copy(target->name, sizeof(target->name), name);
+      model_copy(target->display_name, sizeof(target->display_name),
+                 display_name != NULL ? display_name : name);
+      target->executable = true;
+      device->action_count++;
     }
 }
 
@@ -329,6 +434,8 @@ static void model_parse_device(cJSON *object,
 
   model_parse_observables(properties, device);
   model_parse_controls(properties, device);
+  model_parse_actions(cJSON_GetObjectItemCaseSensitive(object, "actions"),
+                      device);
 }
 
 static struct home_panel_room_s *model_find_room(

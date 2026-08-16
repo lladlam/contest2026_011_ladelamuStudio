@@ -11,6 +11,7 @@
 
 #define HOME_PROACTIVE_DID_SIZE  80
 #define HOME_PROACTIVE_NAME_SIZE 48
+#define HOME_PROACTIVE_MAX_AUTOMATIONS 12
 
 enum home_proactive_mode_e
 {
@@ -55,7 +56,8 @@ enum home_proactive_update_kind_e
   HOME_PROACTIVE_UPDATE_REJECTED,
   HOME_PROACTIVE_UPDATE_AUTOMATION_ENABLED,
   HOME_PROACTIVE_UPDATE_AUTOMATION_DISABLED,
-  HOME_PROACTIVE_UPDATE_EXECUTION_RESULT
+  HOME_PROACTIVE_UPDATE_EXECUTION_SUCCEEDED,
+  HOME_PROACTIVE_UPDATE_EXECUTION_FAILED
 };
 
 struct home_proactive_event_s
@@ -119,6 +121,9 @@ struct home_proactive_snapshot_s
   unsigned int learning_mean_minute;
   unsigned int learning_deviation_minutes;
   unsigned int learning_delay_seconds;
+  unsigned int learning_execution_successes;
+  unsigned int learning_execution_failures;
+  unsigned int learning_consecutive_rejections;
   enum home_proactive_candidate_kind_e learning_kind;
   enum home_proactive_update_kind_e learning_update_kind;
   bool learning_automation_enabled;
@@ -146,6 +151,20 @@ struct home_proactive_snapshot_s
   unsigned int predicted_delay_seconds;
 };
 
+struct home_proactive_automation_s
+{
+  uint32_t routine_id;
+  uint32_t trigger_device_hash;
+  uint32_t action_device_hash;
+  uint16_t action_siid;
+  uint16_t action_piid;
+  uint16_t mean_minute_of_day;
+  uint16_t mean_delay_seconds;
+  int action_value;
+  enum home_proactive_event_kind_e action_kind;
+  bool event_triggered;
+};
+
 void home_proactive_initialize(void);
 void home_proactive_reset(void);
 void home_proactive_set_context(
@@ -162,6 +181,10 @@ bool home_proactive_ack_learning(uint32_t learning_revision,
                                  uint32_t routine_id);
 int home_proactive_disable_automation(uint32_t action_device_hash,
                                       uint16_t siid, uint16_t piid);
+unsigned int home_proactive_list_automations(
+  struct home_proactive_automation_s *automations,
+  unsigned int capacity);
+int home_proactive_remove_automation(uint32_t routine_id);
 void home_proactive_get_snapshot(struct home_proactive_snapshot_s *snapshot);
 int home_proactive_export_profile(void *buffer, size_t capacity,
                                   size_t *length);

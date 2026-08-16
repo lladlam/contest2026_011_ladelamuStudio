@@ -33,10 +33,6 @@ struct d13x_fb_state_s
 {
   bool initialized;
   bool power_on;
-#ifdef CONFIG_FB_UPDATE
-  bool area_clean;
-  uint16_t clean_yoffset;
-#endif
   uint8_t *memory;
   struct wdog_s pan_wdog;
 };
@@ -197,8 +193,6 @@ static int d13x_fb_updatearea(struct fb_vtable_s *vtable,
 
   d13x_fb_clean_cache_area((const void *)address, width * 2u,
                            D13X_FB_STRIDE, height);
-  g_fb.clean_yoffset = y < D13X_FB_HEIGHT ? 0 : D13X_FB_HEIGHT;
-  g_fb.area_clean = true;
   return OK;
 }
 #endif
@@ -217,18 +211,20 @@ static int d13x_fb_pandisplay(struct fb_vtable_s *vtable,
     }
 
   address = (uintptr_t)g_fb.memory + pinfo->yoffset * D13X_FB_STRIDE;
-#ifdef CONFIG_FB_UPDATE
-  if (!g_fb.area_clean || g_fb.clean_yoffset != pinfo->yoffset)
-    {
-      d13x_fb_clean_cache_area((const void *)address, D13X_FB_STRIDE,
-                               D13X_FB_STRIDE, D13X_FB_HEIGHT);
-    }
 
-  g_fb.area_clean = false;
-#else
-  d13x_fb_clean_cache_area((const void *)address, D13X_FB_STRIDE,
-                           D13X_FB_STRIDE, D13X_FB_HEIGHT);
-#endif
+  /* LVGL uses DIRECT double buffering.  Before drawing a new dirty area it
+   * copies the previous frame's dirty areas into the back buffer so both
+   * framebuffers remain identical.  FBIO_UPDATE only describes the current
+   * dirty area and therefore does not cover those synchronization copies.
+   * Cleaning just that area can leave stale cache lines in the back buffer,
+   * which appear as old labels and widgets after the subsequent page flip.
+   *
+   * Clean the complete (finite) data cache immediately before publishing the
+   * buffer.  This makes every LVGL write visible to the DE DMA master.  It is
+   * also cheaper than walking the entire 1.2 MiB framebuffer line by line.
+   */
+
+  d13x_fb_clean_cache();
   d13x_de_set_framebuffer(address);
 
   /* The DE switches buffers immediately and this port has no VSYNC IRQ.

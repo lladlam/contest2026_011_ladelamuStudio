@@ -30,6 +30,9 @@
 #define MIJIA_CLIENT_THREAD_STACK    16384
 #define MIJIA_COMMAND_THREAD_STACK   16384
 #define MIJIA_AGENT_THREAD_STACK     12288
+#define MIJIA_BOARD_AGENT_THREAD_STACK 16384
+#define MIJIA_BOARD_AGENT_RESPONSE_SIZE 8192
+#define MIJIA_BOARD_AGENT_MAX_PROPERTIES 32
 #define MIJIA_AGENT_PENDING_SECONDS  20
 #define MIJIA_BACKGROUND_PRIORITY    60
 #define MIJIA_QR_WIRE_HEADER_SIZE    12
@@ -68,10 +71,12 @@ struct mijia_client_s
   uint32_t next_family_revision;
   uint32_t next_command_revision;
   uint32_t next_agent_revision;
+  uint32_t next_board_update_revision;
   size_t qr_size;
   bool command_busy;
   bool agent_busy;
   bool agent_learning_busy;
+  bool board_agent_busy;
   uint32_t agent_learning_completed_revision;
   uint32_t agent_learning_completed_routine;
   char token[128];
@@ -81,6 +86,7 @@ struct mijia_client_s
   struct home_panel_mijia_family_snapshot_s family_snapshot;
   struct home_panel_mijia_command_snapshot_s command_snapshot;
   struct home_panel_agent_snapshot_s agent_snapshot;
+  struct home_panel_cloud_proposal_s board_proposal;
 };
 
 struct mijia_credentials_s
@@ -105,7 +111,8 @@ static void mijia_configure_background_thread(pthread_attr_t *attr)
 enum mijia_command_kind_e
 {
   MIJIA_COMMAND_PROPERTY = 0,
-  MIJIA_COMMAND_SCENE
+  MIJIA_COMMAND_SCENE,
+  MIJIA_COMMAND_ACTION
 };
 
 struct mijia_command_request_s
@@ -137,12 +144,36 @@ struct mijia_agent_learning_request_s
   char token[128];
 };
 
+enum mijia_board_agent_request_kind_e
+{
+  MIJIA_BOARD_AGENT_STATE = 0,
+  MIJIA_BOARD_AGENT_POLL,
+  MIJIA_BOARD_AGENT_CONFIRM,
+  MIJIA_BOARD_AGENT_FEEDBACK
+};
+
+struct mijia_board_agent_request_s
+{
+  enum mijia_board_agent_request_kind_e kind;
+  uint32_t generation;
+  uint32_t board_revision;
+  uint32_t proposal_after;
+  uint64_t generated_at;
+  unsigned int minute_of_day;
+  char token[128];
+  char proposal_id[65];
+  char feedback[24];
+  struct home_panel_family_model_s *model;
+};
+
 static struct mijia_client_s g_mijia =
 {
   .lock = PTHREAD_MUTEX_INITIALIZER,
   .condition = PTHREAD_COND_INITIALIZER,
 };
 static uint8_t g_mijia_qr_data[MIJIA_QR_DATA_SIZE];
+
+static bool mijia_board_proposal_id_valid(const char *value);
 
 static uint64_t mijia_monotonic_ms(void)
 {
@@ -334,6 +365,55 @@ static int mijia_authorized_post(const char *token, const char *path,
       return ret;
     }
 
+  return context.http_status >= 200 && context.http_status < 300 ?
+         0 : -EPROTO;
+}
+
+static int mijia_authorized_get(const char *token, const char *path,
+                                char *response_data,
+                                size_t response_capacity,
+                                unsigned int *http_status)
+{
+  struct webclient_context context;
+  struct mijia_response_s response;
+  const char *headers[3];
+  char authorization[192];
+  char url[512];
+  char buffer[MIJIA_HTTP_BUFFER_SIZE];
+  int length;
+  int ret;
+
+  length = snprintf(url, sizeof(url), "%s%s",
+                    CONFIG_D13X_HOME_PANEL_MIJIA_SERVER_URL, path);
+  if (length < 0 || (size_t)length >= sizeof(url))
+    {
+      return -ENAMETOOLONG;
+    }
+  snprintf(authorization, sizeof(authorization),
+           "Authorization: Bearer %s", token);
+  headers[0] = "Accept: application/json";
+  headers[1] = authorization;
+  headers[2] = "Connection: close";
+  memset(&response, 0, sizeof(response));
+  response.data = response_data;
+  response.capacity = response_capacity;
+  response_data[0] = '\0';
+  webclient_set_defaults(&context);
+  context.method = "GET";
+  context.url = url;
+  context.buffer = buffer;
+  context.buflen = sizeof(buffer);
+  context.headers = headers;
+  context.nheaders = 3;
+  context.sink_callback = mijia_response_sink;
+  context.sink_callback_arg = &response;
+  context.timeout_sec = CONFIG_D13X_HOME_PANEL_MIJIA_TIMEOUT;
+  ret = webclient_perform(&context);
+  *http_status = context.http_status;
+  if (ret < 0)
+    {
+      return ret;
+    }
   return context.http_status >= 200 && context.http_status < 300 ?
          0 : -EPROTO;
 }
@@ -1793,6 +1873,22 @@ static void *mijia_command_worker(void *arg)
         }
       path = "/api/device/property";
     }
+  else if (request->kind == MIJIA_COMMAND_ACTION)
+    {
+      cJSON *arguments;
+
+      cJSON_AddStringToObject(payload, "did", request->identifier);
+      cJSON_AddStringToObject(payload, "action_name",
+                             request->property_name);
+      cJSON_AddNumberToObject(payload, "siid", request->siid);
+      cJSON_AddNumberToObject(payload, "aiid", request->piid);
+      arguments = cJSON_AddArrayToObject(payload, "arguments");
+      if (arguments == NULL)
+        {
+          goto out;
+        }
+      path = "/api/device/action";
+    }
   else
     {
       cJSON_AddStringToObject(payload, "scene_id", request->identifier);
@@ -2257,7 +2353,11 @@ out:
              "bytes=%u; local fallback\n",
              ret, http_status, (unsigned int)strlen(response));
       mijia_publish_agent(request, HOME_PANEL_AGENT_ERROR,
-                          HOME_PANEL_AGENT_PROPOSE,
+                          request->context.local_eligible ?
+                            HOME_PANEL_AGENT_PROPOSE :
+                            HOME_PANEL_AGENT_SUPPRESS,
+                          !request->context.local_eligible ?
+                            HOME_PANEL_AGENT_POLICY_NONE :
                           request->context.candidate_kind == 0 ?
                             (request->context.air_conditioner_on ?
                               HOME_PANEL_AGENT_POLICY_TURN_OFF_SELECTED_LIGHT_KEEP_AC :
@@ -2289,7 +2389,8 @@ static const char *mijia_learning_update_kind(unsigned int kind)
     "rejected",
     "automation_enabled",
     "automation_disabled",
-    "execution_result"
+    "execution_succeeded",
+    "execution_failed"
   };
 
   return kind < sizeof(names) / sizeof(names[0]) ?
@@ -2348,6 +2449,12 @@ static void *mijia_agent_learning_worker(void *arg)
                          request->context.mean_deviation_minutes);
   cJSON_AddNumberToObject(payload, "mean_delay_seconds",
                          request->context.mean_delay_seconds);
+  cJSON_AddNumberToObject(payload, "execution_success_count",
+                         request->context.execution_success_count);
+  cJSON_AddNumberToObject(payload, "execution_failure_count",
+                         request->context.execution_failure_count);
+  cJSON_AddNumberToObject(payload, "consecutive_rejections",
+                         request->context.consecutive_rejections);
   cJSON_AddBoolToObject(payload, "automation_enabled",
                        request->context.automation_enabled);
   body = cJSON_PrintUnformatted(payload);
@@ -2419,6 +2526,733 @@ out:
   return NULL;
 }
 
+static uint32_t mijia_board_hash(const char *text)
+{
+  uint32_t hash = 2166136261u;
+  const unsigned char *cursor = (const unsigned char *)text;
+
+  while (cursor != NULL && *cursor != '\0')
+    {
+      hash = (hash ^ *cursor++) * 16777619u;
+    }
+  return hash == 0 ? 1 : hash;
+}
+
+static bool mijia_board_semantic_valid(const char *value)
+{
+  size_t index;
+  size_t length;
+
+  if (value == NULL)
+    {
+      return false;
+    }
+  length = strlen(value);
+  if (length == 0 || length > 32)
+    {
+      return false;
+    }
+  for (index = 0; index < length; index++)
+    {
+      char ch = value[index];
+      if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+            ch == '.' || ch == '_' || ch == '-'))
+        {
+          return false;
+        }
+    }
+  return true;
+}
+
+static cJSON *mijia_board_property_json(const char *semantic,
+                                        uint16_t siid, uint16_t piid,
+                                        enum home_panel_control_type_e type,
+                                        bool boolean_value, int value,
+                                        bool writable, bool has_range,
+                                        int minimum, int maximum, int step)
+{
+  cJSON *item;
+
+  if (!mijia_board_semantic_valid(semantic) || siid == 0 || piid == 0 ||
+      (type != HOME_PANEL_CONTROL_BOOLEAN &&
+       type != HOME_PANEL_CONTROL_NUMBER &&
+       type != HOME_PANEL_CONTROL_ENUM))
+    {
+      return NULL;
+    }
+  item = cJSON_CreateObject();
+  if (item == NULL)
+    {
+      return NULL;
+    }
+  cJSON_AddStringToObject(item, "semantic", semantic);
+  cJSON_AddNumberToObject(item, "siid", siid);
+  cJSON_AddNumberToObject(item, "piid", piid);
+  cJSON_AddStringToObject(item, "value_type",
+                         type == HOME_PANEL_CONTROL_BOOLEAN ?
+                           "boolean" : "number");
+  if (type == HOME_PANEL_CONTROL_BOOLEAN)
+    {
+      cJSON_AddBoolToObject(item, "value", boolean_value);
+    }
+  else
+    {
+      cJSON_AddNumberToObject(item, "value", value);
+    }
+  cJSON_AddBoolToObject(item, "writable", writable);
+  if (writable && type != HOME_PANEL_CONTROL_BOOLEAN && has_range)
+    {
+      cJSON_AddNumberToObject(item, "minimum", minimum);
+      cJSON_AddNumberToObject(item, "maximum", maximum);
+      cJSON_AddNumberToObject(item, "step", step > 0 ? step : 1);
+    }
+  cJSON_AddStringToObject(item, "purpose",
+                         writable ? "同步当前值和可写能力供规律分析" :
+                                    "同步只读状态供规律分析");
+  return item;
+}
+
+static bool mijia_board_property_duplicate(
+  const struct home_panel_device_s *device,
+  const struct home_panel_observable_s *observable)
+{
+  unsigned int index;
+
+  for (index = 0; index < device->control_count; index++)
+    {
+      if (device->controls[index].siid == observable->siid &&
+          device->controls[index].piid == observable->piid)
+        {
+          return true;
+        }
+    }
+  return false;
+}
+
+static char *mijia_build_board_state_body(
+  const struct mijia_board_agent_request_s *request)
+{
+  cJSON *root = NULL;
+  cJSON *devices = NULL;
+  char *body = NULL;
+  unsigned int device_index;
+
+  root = cJSON_CreateObject();
+  if (root == NULL)
+    {
+      return NULL;
+    }
+  cJSON_AddStringToObject(
+    root, "purpose", "定时同步匿名设备状态，供服务端发现主动智能规律");
+  cJSON_AddNumberToObject(root, "board_revision", request->board_revision);
+  cJSON_AddNumberToObject(root, "proposal_after", request->proposal_after);
+  cJSON_AddNumberToObject(root, "generated_at",
+                         (double)request->generated_at);
+  cJSON_AddNumberToObject(root, "minute_of_day", request->minute_of_day);
+  devices = cJSON_AddArrayToObject(root, "devices");
+  if (devices == NULL)
+    {
+      goto out;
+    }
+
+  for (device_index = 0;
+       device_index < request->model->device_count; device_index++)
+    {
+      const struct home_panel_device_s *device =
+        &request->model->devices[device_index];
+      cJSON *item = cJSON_CreateObject();
+      cJSON *properties;
+      char key[9];
+      const char *category;
+      unsigned int index;
+      unsigned int property_count = 0;
+
+      if (item == NULL)
+        {
+          goto out;
+        }
+      snprintf(key, sizeof(key), "%08x",
+               (unsigned int)mijia_board_hash(device->did));
+      cJSON_AddStringToObject(item, "device_key", key);
+      snprintf(key, sizeof(key), "%08x",
+               (unsigned int)mijia_board_hash(device->room));
+      cJSON_AddStringToObject(item, "room_key", key);
+      category = mijia_board_semantic_valid(device->type) ?
+                   device->type : "unknown";
+      cJSON_AddStringToObject(item, "category", category);
+      cJSON_AddBoolToObject(item, "online", device->online);
+      cJSON_AddStringToObject(item, "purpose",
+                             "同步匿名设备状态和可写能力");
+      properties = cJSON_AddArrayToObject(item, "properties");
+      if (properties == NULL)
+        {
+          cJSON_Delete(item);
+          goto out;
+        }
+      for (index = 0; index < device->control_count; index++)
+        {
+          const struct home_panel_control_s *control =
+            &device->controls[index];
+          cJSON *property;
+
+          if (!control->has_value ||
+              property_count >= MIJIA_BOARD_AGENT_MAX_PROPERTIES)
+            {
+              continue;
+            }
+          property = mijia_board_property_json(
+            control->name, control->siid, control->piid, control->type,
+            control->boolean_value, control->value, true,
+            control->has_range, control->minimum, control->maximum,
+            control->step);
+          if (property != NULL)
+            {
+              cJSON_AddItemToArray(properties, property);
+              property_count++;
+            }
+        }
+      for (index = 0; index < device->observable_count; index++)
+        {
+          const struct home_panel_observable_s *observable =
+            &device->observables[index];
+          cJSON *property;
+
+          if (!observable->has_value ||
+              observable->type == HOME_PANEL_CONTROL_TEXT ||
+              mijia_board_property_duplicate(device, observable) ||
+              property_count >= MIJIA_BOARD_AGENT_MAX_PROPERTIES)
+            {
+              continue;
+            }
+          property = mijia_board_property_json(
+            observable->name, observable->siid, observable->piid,
+            observable->type, observable->boolean_value,
+            observable->value, false, false, 0, 0, 1);
+          if (property != NULL)
+            {
+              cJSON_AddItemToArray(properties, property);
+              property_count++;
+            }
+        }
+      cJSON_AddItemToArray(devices, item);
+    }
+  body = cJSON_PrintUnformatted(root);
+
+out:
+  cJSON_Delete(root);
+  return body;
+}
+
+static int mijia_board_status_parse(
+  const char *value, enum home_panel_cloud_proposal_status_e *status_value)
+{
+  static const struct
+  {
+    const char *name;
+    enum home_panel_cloud_proposal_status_e value;
+  } values[] =
+  {
+    {"awaiting_confirmation", HOME_PANEL_CLOUD_PROPOSAL_AWAITING_CONFIRMATION},
+    {"generating_plan", HOME_PANEL_CLOUD_PROPOSAL_GENERATING_PLAN},
+    {"plan_ready", HOME_PANEL_CLOUD_PROPOSAL_PLAN_READY},
+    {"accepted", HOME_PANEL_CLOUD_PROPOSAL_ACCEPTED},
+    {"completed", HOME_PANEL_CLOUD_PROPOSAL_COMPLETED},
+    {"failed", HOME_PANEL_CLOUD_PROPOSAL_FAILED},
+    {"installed", HOME_PANEL_CLOUD_PROPOSAL_INSTALLED},
+    {"dismissed", HOME_PANEL_CLOUD_PROPOSAL_DISMISSED},
+  };
+  unsigned int index;
+
+  for (index = 0; index < sizeof(values) / sizeof(values[0]); index++)
+    {
+      if (value != NULL && strcmp(value, values[index].name) == 0)
+        {
+          *status_value = values[index].value;
+          return 0;
+        }
+    }
+  return -EBADMSG;
+}
+
+static int mijia_board_parse_trigger(
+  cJSON *item, struct home_panel_cloud_trigger_s *trigger)
+{
+  const char *kind;
+  const char *semantic;
+  const char *device_key;
+  cJSON *value;
+  char *end;
+  unsigned long parsed;
+
+  memset(trigger, 0, sizeof(*trigger));
+  if (item == NULL || cJSON_IsNull(item))
+    {
+      return 0;
+    }
+  if (!cJSON_IsObject(item))
+    {
+      return -EBADMSG;
+    }
+  kind = mijia_json_string(item, "kind");
+  if (kind != NULL && strcmp(kind, "time") == 0)
+    {
+      cJSON *minute = cJSON_GetObjectItemCaseSensitive(item,
+                                                       "minute_of_day");
+      cJSON *window = cJSON_GetObjectItemCaseSensitive(item,
+                                                       "window_minutes");
+      cJSON *days = cJSON_GetObjectItemCaseSensitive(item, "days_mask");
+      if (!cJSON_IsNumber(minute) || minute->valueint < 0 ||
+          minute->valueint > 1439 || !cJSON_IsNumber(window) ||
+          window->valueint < 1 || window->valueint > 120 ||
+          !cJSON_IsNumber(days) || days->valueint < 1 ||
+          days->valueint > 0x7f)
+        {
+          return -EBADMSG;
+        }
+      trigger->kind = HOME_PANEL_CLOUD_TRIGGER_TIME;
+      trigger->minute_of_day = minute->valueint;
+      trigger->window_minutes = window->valueint;
+      trigger->days_mask = days->valueint;
+      return 0;
+    }
+  if (kind == NULL || strcmp(kind, "property") != 0)
+    {
+      return -EBADMSG;
+    }
+  device_key = mijia_json_string(item, "device_key");
+  semantic = mijia_json_string(item, "semantic");
+  if (device_key == NULL || strlen(device_key) != 8 ||
+      !mijia_board_semantic_valid(semantic))
+    {
+      return -EBADMSG;
+    }
+  parsed = strtoul(device_key, &end, 16);
+  if (*end != '\0' || parsed > UINT32_MAX)
+    {
+      return -EBADMSG;
+    }
+  trigger->device_key = (uint32_t)parsed;
+  mijia_copy_string(trigger->semantic, sizeof(trigger->semantic), semantic);
+  value = cJSON_GetObjectItemCaseSensitive(item, "value");
+  if (cJSON_IsBool(value))
+    {
+      trigger->value_is_boolean = true;
+      trigger->value = cJSON_IsTrue(value) ? 1 : 0;
+    }
+  else if (cJSON_IsNumber(value))
+    {
+      trigger->value = value->valueint;
+    }
+  else
+    {
+      return -EBADMSG;
+    }
+  value = cJSON_GetObjectItemCaseSensitive(item, "delay_seconds");
+  if (!cJSON_IsNumber(value) || value->valueint < 0 ||
+      value->valueint > 3600)
+    {
+      return -EBADMSG;
+    }
+  trigger->delay_seconds = value->valueint;
+  trigger->kind = HOME_PANEL_CLOUD_TRIGGER_PROPERTY;
+  return 0;
+}
+
+static int mijia_board_parse_plan_actions(
+  cJSON *plan, struct home_panel_cloud_proposal_s *proposal)
+{
+  cJSON *actions;
+  cJSON *action;
+
+  if (plan == NULL || cJSON_IsNull(plan))
+    {
+      proposal->action_count = 0;
+      return 0;
+    }
+  actions = cJSON_GetObjectItemCaseSensitive(plan, "actions");
+  if (!cJSON_IsArray(actions) || cJSON_GetArraySize(actions) < 1 ||
+      cJSON_GetArraySize(actions) > HOME_PANEL_CLOUD_MAX_ACTIONS)
+    {
+      return -EBADMSG;
+    }
+  cJSON_ArrayForEach(action, actions)
+    {
+      struct home_panel_cloud_action_s *target =
+        &proposal->actions[proposal->action_count];
+      const char *device_key = mijia_json_string(action, "device_key");
+      const char *semantic = mijia_json_string(action, "semantic");
+      const char *value_type = mijia_json_string(action, "value_type");
+      const char *purpose = mijia_json_string(action, "purpose");
+      cJSON *siid = cJSON_GetObjectItemCaseSensitive(action, "siid");
+      cJSON *piid = cJSON_GetObjectItemCaseSensitive(action, "piid");
+      cJSON *value = cJSON_GetObjectItemCaseSensitive(action, "value");
+      char *end;
+      unsigned long parsed;
+
+      if (device_key == NULL || strlen(device_key) != 8 ||
+          !mijia_board_semantic_valid(semantic) || value_type == NULL ||
+          !mijia_agent_text_valid(purpose, 79) || strlen(purpose) < 4 ||
+          !cJSON_IsNumber(siid) || siid->valueint < 1 ||
+          siid->valueint > 65535 || !cJSON_IsNumber(piid) ||
+          piid->valueint < 1 || piid->valueint > 65535)
+        {
+          return -EBADMSG;
+        }
+      parsed = strtoul(device_key, &end, 16);
+      if (*end != '\0' || parsed > UINT32_MAX)
+        {
+          return -EBADMSG;
+        }
+      target->device_key = parsed;
+      target->siid = siid->valueint;
+      target->piid = piid->valueint;
+      mijia_copy_string(target->semantic, sizeof(target->semantic), semantic);
+      mijia_copy_string(target->purpose, sizeof(target->purpose), purpose);
+      if (strcmp(value_type, "boolean") == 0 && cJSON_IsBool(value))
+        {
+          target->value_is_boolean = true;
+          target->value = cJSON_IsTrue(value) ? 1 : 0;
+        }
+      else if (strcmp(value_type, "number") == 0 &&
+               cJSON_IsNumber(value))
+        {
+          target->value = value->valueint;
+        }
+      else
+        {
+          return -EBADMSG;
+        }
+      proposal->action_count++;
+    }
+  return 0;
+}
+
+static int mijia_board_parse_proposal(
+  cJSON *item, struct home_panel_cloud_proposal_s *proposal)
+{
+  const char *id;
+  const char *kind;
+  const char *status_value;
+  const char *purpose;
+  const char *explanation;
+  cJSON *value;
+
+  memset(proposal, 0, sizeof(*proposal));
+  if (item == NULL || cJSON_IsNull(item))
+    {
+      return -ENOENT;
+    }
+  id = mijia_json_string(item, "proposal_id");
+  kind = mijia_json_string(item, "kind");
+  status_value = mijia_json_string(item, "status");
+  purpose = mijia_json_string(item, "purpose");
+  explanation = mijia_json_string(item, "explanation");
+  if (!mijia_board_proposal_id_valid(id) ||
+      !mijia_agent_text_valid(purpose, 159) ||
+      !mijia_agent_text_valid(explanation, 255) ||
+      strlen(purpose) < 8 || strlen(explanation) < 8 ||
+      mijia_board_status_parse(status_value, &proposal->status) < 0)
+    {
+      return -EBADMSG;
+    }
+  if (kind != NULL && strcmp(kind, "one_time") == 0)
+    {
+      proposal->kind = HOME_PANEL_CLOUD_ONE_TIME;
+    }
+  else if (kind != NULL && strcmp(kind, "automation") == 0)
+    {
+      proposal->kind = HOME_PANEL_CLOUD_AUTOMATION;
+    }
+  else
+    {
+      return -EBADMSG;
+    }
+  value = cJSON_GetObjectItemCaseSensitive(item, "proposal_revision");
+  if (!cJSON_IsNumber(value) || value->valuedouble < 1 ||
+      value->valuedouble > UINT32_MAX)
+    {
+      return -EBADMSG;
+    }
+  proposal->revision = (uint32_t)value->valuedouble;
+  value = cJSON_GetObjectItemCaseSensitive(item, "expires_at");
+  if (!cJSON_IsNumber(value) || value->valuedouble < 1)
+    {
+      return -EBADMSG;
+    }
+  proposal->expires_at = (uint64_t)value->valuedouble;
+  value = cJSON_GetObjectItemCaseSensitive(item, "confidence");
+  if (!cJSON_IsNumber(value) || value->valueint < 0 || value->valueint > 100)
+    {
+      return -EBADMSG;
+    }
+  proposal->confidence = value->valueint;
+  value = cJSON_GetObjectItemCaseSensitive(item, "intents");
+  if (!cJSON_IsArray(value) || cJSON_GetArraySize(value) < 1 ||
+      cJSON_GetArraySize(value) > HOME_PANEL_CLOUD_MAX_ACTIONS)
+    {
+      return -EBADMSG;
+    }
+  proposal->intent_count = cJSON_GetArraySize(value);
+  proposal->requires_confirmation = cJSON_IsTrue(
+    cJSON_GetObjectItemCaseSensitive(item, "requires_confirmation"));
+  mijia_copy_string(proposal->proposal_id, sizeof(proposal->proposal_id), id);
+  mijia_copy_string(proposal->purpose, sizeof(proposal->purpose), purpose);
+  mijia_copy_string(proposal->explanation, sizeof(proposal->explanation),
+                    explanation);
+  if (mijia_board_parse_trigger(
+        cJSON_GetObjectItemCaseSensitive(item, "trigger"),
+        &proposal->trigger) < 0 ||
+      mijia_board_parse_plan_actions(
+        cJSON_GetObjectItemCaseSensitive(item, "plan"), proposal) < 0)
+    {
+      return -EBADMSG;
+    }
+  if (proposal->kind == HOME_PANEL_CLOUD_ONE_TIME &&
+      proposal->action_count == 0)
+    {
+      return -EBADMSG;
+    }
+  proposal->valid = true;
+  return 0;
+}
+
+static bool mijia_board_proposal_id_valid(const char *value)
+{
+  size_t index;
+  size_t length;
+
+  if (value == NULL)
+    {
+      return false;
+    }
+  length = strlen(value);
+  if (length < 16 || length > 64)
+    {
+      return false;
+    }
+  for (index = 0; index < length; index++)
+    {
+      char ch = value[index];
+      if (!((ch >= 'a' && ch <= 'z') ||
+            (ch >= 'A' && ch <= 'Z') ||
+            (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'))
+        {
+          return false;
+        }
+    }
+  return true;
+}
+
+static void mijia_board_publish_proposal(
+  uint32_t generation, const struct home_panel_cloud_proposal_s *proposal,
+  bool clear)
+{
+  pthread_mutex_lock(&g_mijia.lock);
+  if (generation == g_mijia.request_generation)
+    {
+      if (clear)
+        {
+          memset(&g_mijia.board_proposal, 0,
+                 sizeof(g_mijia.board_proposal));
+          g_mijia.board_proposal.update_revision =
+            ++g_mijia.next_board_update_revision;
+        }
+      else if (proposal != NULL &&
+               (!g_mijia.board_proposal.valid ||
+                proposal->revision >= g_mijia.board_proposal.revision))
+        {
+          g_mijia.board_proposal = *proposal;
+          g_mijia.board_proposal.update_revision =
+            ++g_mijia.next_board_update_revision;
+        }
+    }
+  pthread_mutex_unlock(&g_mijia.lock);
+}
+
+static void *mijia_board_agent_worker(void *arg)
+{
+  struct mijia_board_agent_request_s *request = arg;
+  struct home_panel_cloud_proposal_s proposal;
+  char response[MIJIA_BOARD_AGENT_RESPONSE_SIZE];
+  char path[128];
+  char *body = NULL;
+  cJSON *payload = NULL;
+  cJSON *root = NULL;
+  cJSON *proposal_item;
+  unsigned int http_status = 0;
+  bool clear = false;
+  int ret = -ENOMEM;
+
+  response[0] = '\0';
+  if (request->kind == MIJIA_BOARD_AGENT_STATE)
+    {
+      body = mijia_build_board_state_body(request);
+      if (body == NULL)
+        {
+          goto out;
+        }
+      ret = mijia_authorized_post(request->token, "/api/agent/state",
+                                  body, response, sizeof(response),
+                                  &http_status);
+    }
+  else if (request->kind == MIJIA_BOARD_AGENT_POLL)
+    {
+      snprintf(path, sizeof(path), "/api/agent/proposal?after=%u",
+               (unsigned int)request->proposal_after);
+      ret = mijia_authorized_get(request->token, path, response,
+                                 sizeof(response), &http_status);
+    }
+  else
+    {
+      payload = cJSON_CreateObject();
+      if (payload == NULL)
+        {
+          goto out;
+        }
+      cJSON_AddStringToObject(
+        payload, "purpose",
+        request->kind == MIJIA_BOARD_AGENT_CONFIRM ?
+          "用户已阅读说明并同意生成离线自动化计划" :
+          "反馈用户选择或设备执行结果供主动智能继续学习");
+      cJSON_AddStringToObject(payload, "proposal_id",
+                             request->proposal_id);
+      if (request->kind == MIJIA_BOARD_AGENT_CONFIRM)
+        {
+          cJSON_AddBoolToObject(payload, "consent", true);
+        }
+      else
+        {
+          cJSON_AddStringToObject(payload, "result", request->feedback);
+        }
+      body = cJSON_PrintUnformatted(payload);
+      if (body == NULL)
+        {
+          goto out;
+        }
+      ret = mijia_authorized_post(
+        request->token,
+        request->kind == MIJIA_BOARD_AGENT_CONFIRM ?
+          "/api/agent/proposal/confirm" :
+          "/api/agent/proposal/feedback",
+        body, response, sizeof(response), &http_status);
+      clear = request->kind == MIJIA_BOARD_AGENT_FEEDBACK &&
+              (strcmp(request->feedback, "dismissed") == 0 ||
+               strcmp(request->feedback, "execution_succeeded") == 0 ||
+               strcmp(request->feedback, "execution_failed") == 0 ||
+               strcmp(request->feedback, "automation_saved") == 0);
+    }
+  if (ret < 0)
+    {
+      goto out;
+    }
+  root = cJSON_Parse(response);
+  if (root == NULL)
+    {
+      ret = -EBADMSG;
+      goto out;
+    }
+  if (request->kind != MIJIA_BOARD_AGENT_FEEDBACK)
+    {
+      proposal_item = cJSON_GetObjectItemCaseSensitive(root, "proposal");
+      ret = mijia_board_parse_proposal(proposal_item, &proposal);
+      if (ret == -ENOENT)
+        {
+          ret = 0;
+        }
+      else if (ret == 0)
+        {
+          mijia_board_publish_proposal(request->generation, &proposal,
+                                       false);
+        }
+    }
+  else
+    {
+      ret = 0;
+      if (clear)
+        {
+          mijia_board_publish_proposal(request->generation, NULL, true);
+        }
+      else if (strcmp(request->feedback, "accepted") == 0)
+        {
+          pthread_mutex_lock(&g_mijia.lock);
+          if (request->generation == g_mijia.request_generation &&
+              g_mijia.board_proposal.valid &&
+              strcmp(g_mijia.board_proposal.proposal_id,
+                     request->proposal_id) == 0)
+            {
+              g_mijia.board_proposal.status =
+                HOME_PANEL_CLOUD_PROPOSAL_ACCEPTED;
+              g_mijia.board_proposal.update_revision =
+                ++g_mijia.next_board_update_revision;
+            }
+          pthread_mutex_unlock(&g_mijia.lock);
+        }
+    }
+
+out:
+  pthread_mutex_lock(&g_mijia.lock);
+  if (request->generation == g_mijia.request_generation)
+    {
+      g_mijia.board_agent_busy = false;
+    }
+  pthread_mutex_unlock(&g_mijia.lock);
+  syslog(ret == 0 ? LOG_INFO : LOG_WARNING,
+         "[HOME][AGENT] board request=%u ret=%d status=%u bytes=%u\n",
+         (unsigned int)request->kind, ret, http_status,
+         (unsigned int)strlen(response));
+  cJSON_free(body);
+  cJSON_Delete(root);
+  cJSON_Delete(payload);
+  free(request->model);
+  memset(request->token, 0, sizeof(request->token));
+  free(request);
+  return NULL;
+}
+
+static int mijia_start_board_agent_request(
+  struct mijia_board_agent_request_s *request)
+{
+  pthread_attr_t attr;
+  pthread_t thread;
+  int ret;
+
+  pthread_mutex_lock(&g_mijia.lock);
+  if (!g_mijia.initialized ||
+      g_mijia.snapshot.state != HOME_PANEL_MIJIA_AUTHENTICATED ||
+      g_mijia.token[0] == '\0')
+    {
+      pthread_mutex_unlock(&g_mijia.lock);
+      return -EACCES;
+    }
+  if (g_mijia.board_agent_busy)
+    {
+      pthread_mutex_unlock(&g_mijia.lock);
+      return -EBUSY;
+    }
+  request->generation = g_mijia.request_generation;
+  mijia_copy_string(request->token, sizeof(request->token), g_mijia.token);
+  g_mijia.board_agent_busy = true;
+  pthread_mutex_unlock(&g_mijia.lock);
+
+  ret = pthread_attr_init(&attr);
+  if (ret == 0)
+    {
+      pthread_attr_setstacksize(&attr, MIJIA_BOARD_AGENT_THREAD_STACK);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      mijia_configure_background_thread(&attr);
+      ret = pthread_create(&thread, &attr, mijia_board_agent_worker,
+                           request);
+      pthread_attr_destroy(&attr);
+    }
+  if (ret != 0)
+    {
+      pthread_mutex_lock(&g_mijia.lock);
+      g_mijia.board_agent_busy = false;
+      pthread_mutex_unlock(&g_mijia.lock);
+    }
+  return ret;
+}
+
 static int mijia_start_command(enum mijia_command_kind_e kind,
                                const char *identifier,
                                const char *display_name,
@@ -2485,7 +3319,9 @@ static int mijia_start_command(enum mijia_command_kind_e kind,
   mijia_copy_string(g_mijia.command_snapshot.message,
                     sizeof(g_mijia.command_snapshot.message),
                     kind == MIJIA_COMMAND_PROPERTY ?
-                    "正在发送设备指令" : "正在执行场景");
+                    "正在发送设备指令" :
+                    kind == MIJIA_COMMAND_ACTION ?
+                    "正在执行设备操作" : "正在执行场景");
   pthread_mutex_unlock(&g_mijia.lock);
 
   ret = pthread_attr_init(&attr);
@@ -2738,6 +3574,7 @@ int home_panel_mijia_request_login(void)
   g_mijia.command_busy = false;
   g_mijia.agent_busy = false;
   g_mijia.agent_learning_busy = false;
+  g_mijia.board_agent_busy = false;
   g_mijia.agent_learning_completed_revision = 0;
   g_mijia.agent_learning_completed_routine = 0;
   memset(&g_mijia.command_snapshot, 0,
@@ -2745,6 +3582,7 @@ int home_panel_mijia_request_login(void)
   g_mijia.command_snapshot.revision = ++g_mijia.next_command_revision;
   memset(&g_mijia.agent_snapshot, 0, sizeof(g_mijia.agent_snapshot));
   g_mijia.agent_snapshot.revision = ++g_mijia.next_agent_revision;
+  memset(&g_mijia.board_proposal, 0, sizeof(g_mijia.board_proposal));
   g_mijia.family_model_valid = false;
   memset(&g_mijia.family_model, 0, sizeof(g_mijia.family_model));
   memset(&g_mijia.family_snapshot, 0,
@@ -2785,6 +3623,23 @@ int home_panel_mijia_request_number_property(const char *did,
   return mijia_start_command(MIJIA_COMMAND_PROPERTY, did, device_name,
                              property_name, siid, piid, false, false,
                              value);
+}
+
+int home_panel_mijia_request_action(const char *did,
+                                    const char *device_name,
+                                    const char *action_name,
+                                    uint16_t siid,
+                                    uint16_t aiid)
+{
+  if (action_name == NULL || action_name[0] == '\0' ||
+      siid == 0 || aiid == 0)
+    {
+      return -EINVAL;
+    }
+
+  return mijia_start_command(MIJIA_COMMAND_ACTION, did, device_name,
+                             action_name, siid, aiid,
+                             true, false, 0);
 }
 
 int home_panel_mijia_request_scene(const char *scene_id,
@@ -2895,14 +3750,15 @@ int home_panel_mijia_request_agent_learning(
   if (context == NULL || context->profile_revision == 0 ||
       context->routine_id == 0 ||
       (context->routine_kind != 1 && context->routine_kind != 2) ||
-      context->update_kind > 5 ||
+      context->update_kind > 6 ||
       context->observation_count == 0 ||
       context->accepted_count + context->rejected_count >
         context->observation_count ||
       context->confidence > 100 ||
       context->mean_minute_of_day >= 24u * 60u ||
       context->mean_deviation_minutes > 720 ||
-      context->mean_delay_seconds > 3600)
+      context->mean_delay_seconds > 3600 ||
+      context->consecutive_rejections > context->rejected_count)
     {
       return -EINVAL;
     }
@@ -2960,6 +3816,135 @@ int home_panel_mijia_request_agent_learning(
       g_mijia.agent_learning_busy = false;
       pthread_mutex_unlock(&g_mijia.lock);
       memset(request->token, 0, sizeof(request->token));
+      free(request);
+    }
+  return ret;
+}
+
+int home_panel_mijia_request_board_state(
+  const struct home_panel_family_model_s *model,
+  uint32_t board_revision, uint32_t proposal_after,
+  uint64_t generated_at, unsigned int minute_of_day)
+{
+  struct mijia_board_agent_request_s *request;
+  int ret;
+
+  if (model == NULL || board_revision == 0 || generated_at == 0 ||
+      minute_of_day >= 24u * 60u)
+    {
+      return -EINVAL;
+    }
+  request = calloc(1, sizeof(*request));
+  if (request == NULL)
+    {
+      return -ENOMEM;
+    }
+  request->model = malloc(sizeof(*request->model));
+  if (request->model == NULL)
+    {
+      free(request);
+      return -ENOMEM;
+    }
+  memcpy(request->model, model, sizeof(*request->model));
+  request->kind = MIJIA_BOARD_AGENT_STATE;
+  request->board_revision = board_revision;
+  request->proposal_after = proposal_after;
+  request->generated_at = generated_at;
+  request->minute_of_day = minute_of_day;
+  ret = mijia_start_board_agent_request(request);
+  if (ret != 0)
+    {
+      free(request->model);
+      free(request);
+    }
+  return ret;
+}
+
+int home_panel_mijia_request_board_proposal(uint32_t after)
+{
+  struct mijia_board_agent_request_s *request = calloc(1, sizeof(*request));
+  int ret;
+
+  if (request == NULL)
+    {
+      return -ENOMEM;
+    }
+  request->kind = MIJIA_BOARD_AGENT_POLL;
+  request->proposal_after = after;
+  ret = mijia_start_board_agent_request(request);
+  if (ret != 0)
+    {
+      free(request);
+    }
+  return ret;
+}
+
+int home_panel_mijia_confirm_board_proposal(const char *proposal_id)
+{
+  struct mijia_board_agent_request_s *request;
+  int ret;
+
+  if (!mijia_board_proposal_id_valid(proposal_id))
+    {
+      return -EINVAL;
+    }
+  request = calloc(1, sizeof(*request));
+  if (request == NULL)
+    {
+      return -ENOMEM;
+    }
+  request->kind = MIJIA_BOARD_AGENT_CONFIRM;
+  mijia_copy_string(request->proposal_id, sizeof(request->proposal_id),
+                    proposal_id);
+  ret = mijia_start_board_agent_request(request);
+  if (ret != 0)
+    {
+      free(request);
+    }
+  return ret;
+}
+
+int home_panel_mijia_feedback_board_proposal(const char *proposal_id,
+                                              const char *result)
+{
+  static const char *const allowed[] =
+  {
+    "accepted", "dismissed", "execution_succeeded",
+    "execution_failed", "automation_saved"
+  };
+  struct mijia_board_agent_request_s *request;
+  unsigned int index;
+  bool valid = false;
+  int ret;
+
+  if (!mijia_board_proposal_id_valid(proposal_id) || result == NULL)
+    {
+      return -EINVAL;
+    }
+  for (index = 0; index < sizeof(allowed) / sizeof(allowed[0]); index++)
+    {
+      if (strcmp(result, allowed[index]) == 0)
+        {
+          valid = true;
+          break;
+        }
+    }
+  if (!valid)
+    {
+      return -EINVAL;
+    }
+  request = calloc(1, sizeof(*request));
+  if (request == NULL)
+    {
+      return -ENOMEM;
+    }
+  request->kind = MIJIA_BOARD_AGENT_FEEDBACK;
+  mijia_copy_string(request->proposal_id, sizeof(request->proposal_id),
+                    proposal_id);
+  mijia_copy_string(request->feedback, sizeof(request->feedback), result);
+  ret = mijia_start_board_agent_request(request);
+  if (ret != 0)
+    {
       free(request);
     }
   return ret;
@@ -3057,6 +4042,18 @@ void home_panel_mijia_get_agent_snapshot(
 
   pthread_mutex_lock(&g_mijia.lock);
   memcpy(snapshot, &g_mijia.agent_snapshot, sizeof(*snapshot));
+  pthread_mutex_unlock(&g_mijia.lock);
+}
+
+void home_panel_mijia_get_board_proposal(
+  struct home_panel_cloud_proposal_s *proposal)
+{
+  if (proposal == NULL)
+    {
+      return;
+    }
+  pthread_mutex_lock(&g_mijia.lock);
+  memcpy(proposal, &g_mijia.board_proposal, sizeof(*proposal));
   pthread_mutex_unlock(&g_mijia.lock);
 }
 
