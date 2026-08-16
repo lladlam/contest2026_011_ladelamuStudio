@@ -77,6 +77,7 @@ struct mijia_client_s
   bool agent_busy;
   bool agent_learning_busy;
   bool board_agent_busy;
+  unsigned int quiet_delta_count;
   uint32_t agent_learning_completed_revision;
   uint32_t agent_learning_completed_routine;
   char token[128];
@@ -1013,6 +1014,14 @@ static int mijia_fetch_family(const char *token, uint32_t generation,
   struct home_panel_family_model_s *parsed_model = NULL;
   int ret = -ENOMEM;
 
+  /* The model is ~118 KiB.  Both full sync and delta merge run inside the
+   * single mijia_worker thread, so a reused scratch buffer avoids a repeated
+   * large malloc/free cycle on every long poll change and keeps the heap
+   * free of fragmentation.
+   */
+
+  static struct home_panel_family_model_s g_sync_model;
+
   response = malloc(CONFIG_D13X_HOME_PANEL_MIJIA_MAX_RESPONSE);
   if (response == NULL)
     {
@@ -1087,12 +1096,8 @@ static int mijia_fetch_family(const char *token, uint32_t generation,
    * so a cloud update cannot stall input while cJSON walks the payload.
    */
 
-  parsed_model = malloc(sizeof(*parsed_model));
-  if (parsed_model == NULL)
-    {
-      ret = -ENOMEM;
-      goto out;
-    }
+  parsed_model = &g_sync_model;
+  memset(parsed_model, 0, sizeof(*parsed_model));
 
   ret = home_panel_mijia_model_parse(response, 0, parsed_model);
   if (ret < 0)
@@ -1116,10 +1121,10 @@ static int mijia_fetch_family(const char *token, uint32_t generation,
   g_mijia.family_snapshot.generated_at = generated_at;
   g_mijia.family_snapshot.json_size = sink.length;
   g_mijia.family_snapshot.home_count = home_count;
-  g_mijia.family_snapshot.room_count = room_count;
-  g_mijia.family_snapshot.device_count = *device_count;
-  g_mijia.family_snapshot.online_count = *online_count;
-  g_mijia.family_snapshot.scene_count = scene_count;
+  g_mijia.family_snapshot.room_count = parsed_model->room_count;
+  g_mijia.family_snapshot.device_count = parsed_model->device_count;
+  g_mijia.family_snapshot.online_count = parsed_model->online_count;
+  g_mijia.family_snapshot.scene_count = parsed_model->scene_count;
   g_mijia.family_snapshot.detail_error_count = detail_error_count;
   g_mijia.family_snapshot.consecutive_failures = 0;
   g_mijia.family_snapshot.stale = false;
@@ -1128,7 +1133,8 @@ static int mijia_fetch_family(const char *token, uint32_t generation,
          "devices=%u online=%u scenes=%u detail_errors=%u\n",
          (unsigned int)g_mijia.family_snapshot.revision,
          server_revision, (unsigned int)sink.length, home_count, room_count,
-         *device_count, *online_count, scene_count, detail_error_count);
+         parsed_model->device_count, parsed_model->online_count,
+         parsed_model->scene_count, detail_error_count);
   pthread_mutex_unlock(&g_mijia.lock);
   ret = 0;
 
@@ -1141,7 +1147,6 @@ out:
     }
 
   cJSON_Delete(root);
-  free(parsed_model);
   free(response);
   return ret;
 }
@@ -1150,7 +1155,6 @@ static int mijia_wait_for_changes(const char *token, uint32_t generation,
                                   uint32_t after, bool *changed,
                                   bool *full_resync)
 {
-  static unsigned int quiet_delta_count;
   char authorization[192];
   const char *headers[2];
   struct webclient_context context;
@@ -1179,6 +1183,12 @@ static int mijia_wait_for_changes(const char *token, uint32_t generation,
   struct home_panel_family_model_s *working_model = NULL;
   int length;
   int ret = -ENOMEM;
+
+  /* Reused by the worker thread for the delta merge; the scratch model is
+   * 118 KiB and would otherwise be malloc'd and freed on every poll change.
+   */
+
+  static struct home_panel_family_model_s g_sync_working_model;
 
   *changed = false;
   *full_resync = false;
@@ -1272,7 +1282,19 @@ static int mijia_wait_for_changes(const char *token, uint32_t generation,
 
   if (revision < after || base_revision != after)
     {
-      ret = -EBADMSG;
+      /* The server reset its revision counter (service restart) or the local
+       * base no longer matches.  A permanent error would stall family
+       * synchronization forever because the worker retries with the same
+       * base.  Fall back to a full resync instead.
+       */
+
+      *changed = true;
+      *full_resync = true;
+      syslog(LOG_INFO,
+             "[HOME][SYNC] delta base mismatch local=%u server=%u; "
+             "full resync\n",
+             (unsigned int)after, (unsigned int)revision);
+      ret = 0;
       goto out;
     }
 
@@ -1329,12 +1351,8 @@ static int mijia_wait_for_changes(const char *token, uint32_t generation,
       goto out;
     }
 
-  working_model = malloc(sizeof(*working_model));
-  if (working_model == NULL)
-    {
-      ret = -ENOMEM;
-      goto out;
-    }
+  working_model = &g_sync_working_model;
+  memset(working_model, 0, sizeof(*working_model));
 
   pthread_mutex_lock(&g_mijia.lock);
   if (generation != g_mijia.request_generation ||
@@ -1511,7 +1529,7 @@ static int mijia_wait_for_changes(const char *token, uint32_t generation,
   *changed = model_changed;
   if (model_changed)
     {
-      quiet_delta_count = 0;
+      g_mijia.quiet_delta_count = 0;
       syslog(LOG_INFO,
              "[HOME][SYNC] delta server=%u bytes=%u methods=%u "
              "properties=%u online=%u\n",
@@ -1521,12 +1539,13 @@ static int mijia_wait_for_changes(const char *token, uint32_t generation,
     }
   else
     {
-      quiet_delta_count++;
-      if (quiet_delta_count % 30 == 0)
+      g_mijia.quiet_delta_count++;
+      if (g_mijia.quiet_delta_count % 30 == 0)
         {
           syslog(LOG_INFO,
                  "[HOME][SYNC] quiet deltas=%u server=%u bytes=%u\n",
-                 quiet_delta_count, revision, (unsigned int)sink.length);
+                 g_mijia.quiet_delta_count, revision,
+                 (unsigned int)sink.length);
         }
     }
   ret = 0;
@@ -1540,7 +1559,6 @@ out:
              (unsigned int)after);
     }
   cJSON_Delete(root);
-  free(working_model);
   free(response);
   return ret;
 }
@@ -1814,6 +1832,18 @@ static void mijia_publish_command(
   const char *message)
 {
   pthread_mutex_lock(&g_mijia.lock);
+
+  /* A worker started under an old login generation must still release the
+   * busy flag; otherwise every later device command is rejected with -EBUSY
+   * until the next login.  The snapshot fields are only updated for the
+   * current generation so stale results do not overwrite a newer login.
+   */
+
+  if (state != HOME_PANEL_MIJIA_COMMAND_PENDING)
+    {
+      g_mijia.command_busy = false;
+    }
+
   if (request->generation == g_mijia.request_generation)
     {
       g_mijia.command_snapshot.state = state;
@@ -1825,10 +1855,6 @@ static void mijia_publish_command(
                         request->display_name);
       mijia_copy_string(g_mijia.command_snapshot.message,
                         sizeof(g_mijia.command_snapshot.message), message);
-      if (state != HOME_PANEL_MIJIA_COMMAND_PENDING)
-        {
-          g_mijia.command_busy = false;
-        }
     }
   pthread_mutex_unlock(&g_mijia.lock);
 }
@@ -3575,6 +3601,7 @@ int home_panel_mijia_request_login(void)
   g_mijia.agent_busy = false;
   g_mijia.agent_learning_busy = false;
   g_mijia.board_agent_busy = false;
+  g_mijia.quiet_delta_count = 0;
   g_mijia.agent_learning_completed_revision = 0;
   g_mijia.agent_learning_completed_routine = 0;
   memset(&g_mijia.command_snapshot, 0,
@@ -3661,11 +3688,8 @@ int home_panel_mijia_request_agent_analysis(
       context->candidate_kind > 2 ||
       context->minute_of_day >= 24u * 60u ||
       context->local_confidence > 100 ||
-      context->routine_accepted + context->routine_rejected >
-        context->routine_observations ||
-      context->accepted_count > context->feedback_count ||
-      context->ignored_count !=
-        context->feedback_count - context->accepted_count ||
+      context->feedback_count > 0 && context->accepted_count >
+        context->feedback_count ||
       !context->local_eligible)
     {
       return -EINVAL;
@@ -3752,8 +3776,6 @@ int home_panel_mijia_request_agent_learning(
       (context->routine_kind != 1 && context->routine_kind != 2) ||
       context->update_kind > 6 ||
       context->observation_count == 0 ||
-      context->accepted_count + context->rejected_count >
-        context->observation_count ||
       context->confidence > 100 ||
       context->mean_minute_of_day >= 24u * 60u ||
       context->mean_deviation_minutes > 720 ||

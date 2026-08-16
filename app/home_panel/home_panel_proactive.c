@@ -445,7 +445,20 @@ static unsigned int proactive_routine_confidence(
     }
 
   score = evidence + feedback + consistency + reliability;
-  return score > penalty ? score - penalty : 0;
+  if (score > penalty)
+    {
+      score -= penalty;
+    }
+  else
+    {
+      score = 0;
+    }
+
+  /* Confidence is a percentage; clamp the weighted sum so the UI and the
+   * cloud analysis request never observe an out-of-range value.
+   */
+
+  return score > 100 ? 100 : score;
 }
 
 static bool proactive_routine_ready(

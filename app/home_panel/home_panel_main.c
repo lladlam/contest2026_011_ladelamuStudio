@@ -1045,6 +1045,21 @@ static void login_close(lv_event_t *event)
   g_login_qr = NULL;
   g_login_message = NULL;
   g_login_action_label = NULL;
+
+  /* Release the QR payload so a closed login dialog does not keep a ~115 KiB
+   * allocation resident for the whole session.
+   */
+
+  if (g_login_qr_data != NULL)
+    {
+      lv_image_cache_drop(&g_login_qr_image);
+      lv_image_set_src(g_login_qr, NULL);
+      free(g_login_qr_data);
+      g_login_qr_data = NULL;
+      g_login_qr_revision = 0;
+      memset(&g_login_qr_image, 0, sizeof(g_login_qr_image));
+    }
+
   lv_obj_delete_async(shade);
 }
 
@@ -2288,26 +2303,33 @@ static void cb_device_toggled(lv_event_t *event)
                                                 binding->device->power_piid,
                                                 requested);
 
-  if (binding->device->power)
-    {
-      lv_obj_add_state(button, LV_STATE_CHECKED);
-    }
-  else
-    {
-      lv_obj_remove_state(button, LV_STATE_CHECKED);
-    }
-
   if (ret == 0)
     {
+      /* Optimistic update: keep the user's intended state while the cloud
+       * confirm is in flight.  Rolling back to the stale model value makes
+       * the switch bounce and fights the user's gesture.
+       */
+
+      lv_obj_add_state(button, LV_STATE_DISABLED);
       lv_label_set_text(binding->state_label,
                         requested ? "正在开启" : "正在关闭");
       lv_obj_set_style_text_color(binding->state_label,
                                   lv_color_hex(COLOR_BLUE), 0);
-      lv_obj_add_state(button, LV_STATE_DISABLED);
       set_command_status(ret);
     }
   else
     {
+      /* Revert to the authoritative model value only on failure. */
+
+      if (binding->device->power)
+        {
+          lv_obj_add_state(button, LV_STATE_CHECKED);
+        }
+      else
+        {
+          lv_obj_remove_state(button, LV_STATE_CHECKED);
+        }
+
       set_command_status(ret);
     }
 }
@@ -2332,18 +2354,26 @@ static void cb_detail_boolean_changed(lv_event_t *event)
     binding->property->name, binding->property->siid,
     binding->property->piid, requested);
 
-  if (binding->property->boolean_value)
+  if (ret == 0)
     {
-      lv_obj_add_state(button, LV_STATE_CHECKED);
+      /* Optimistic update; keep the user's intended state while the command
+       * is in flight instead of bouncing back to the stale model value.
+       */
+
+      lv_obj_add_state(button, LV_STATE_DISABLED);
     }
   else
     {
-      lv_obj_remove_state(button, LV_STATE_CHECKED);
-    }
+      /* Only revert to the authoritative model value on failure. */
 
-  if (ret == 0)
-    {
-      lv_obj_add_state(button, LV_STATE_DISABLED);
+      if (binding->property->boolean_value)
+        {
+          lv_obj_add_state(button, LV_STATE_CHECKED);
+        }
+      else
+        {
+          lv_obj_remove_state(button, LV_STATE_CHECKED);
+        }
     }
   set_command_status(ret);
 }
@@ -2685,6 +2715,7 @@ int main(int argc, char *argv[])
       syslog(LOG_ERR,
              "[HOME][FONT] using built-in subset fallback ret=%d\n", ret);
     }
+  proactive_ctrl_initialize();
   proactive_ctrl_load_profile();
   proactive_ctrl_set_family_model(&g_family_model);
   proactive_ctrl_update_context();

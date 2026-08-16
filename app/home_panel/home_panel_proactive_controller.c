@@ -524,33 +524,42 @@ static bool cloud_build_record(
 static void cloud_queue_feedback(const char *proposal_id,
                                  const char *result)
 {
+  const char *resolved_result = result == NULL ? "" : result;
   struct cloud_feedback_s *feedback;
+  unsigned int index;
 
   if (proposal_id == NULL || strlen(proposal_id) < 16)
     {
       return;
     }
-  if (g_cloud_feedback_count > 0)
+
+  /* Deduplicate across the whole queue, not just the tail, so repeated
+   * callbacks for the same proposal cannot flood the cloud with the same
+   * feedback record.
+   */
+
+  for (index = 0; index < g_cloud_feedback_count; index++)
     {
-      feedback = &g_cloud_feedback_queue[g_cloud_feedback_count - 1];
+      feedback = &g_cloud_feedback_queue[index];
       if (strcmp(feedback->proposal_id, proposal_id) == 0 &&
-          strcmp(feedback->result, result == NULL ? "" : result) == 0)
+          strcmp(feedback->result, resolved_result) == 0)
         {
           return;
         }
     }
+
   if (g_cloud_feedback_count >= CLOUD_FEEDBACK_QUEUE_MAX)
     {
       syslog(LOG_WARNING,
              "[HOME][AGENT] feedback queue full result=%s\n",
-             result == NULL ? "" : result);
+             resolved_result);
       return;
     }
   feedback = &g_cloud_feedback_queue[g_cloud_feedback_count++];
   snprintf(feedback->proposal_id, sizeof(feedback->proposal_id), "%s",
            proposal_id);
   snprintf(feedback->result, sizeof(feedback->result), "%s",
-           result == NULL ? "" : result);
+           resolved_result);
 }
 
 /****************************************************************************
