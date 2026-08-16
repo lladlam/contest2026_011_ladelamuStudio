@@ -546,6 +546,10 @@ static bool network_resolve_host(const char *hostname,
   struct dns_header_s *header = (struct dns_header_s *)query;
   const char *label = hostname;
   uint16_t query_id = ++g_network_dns_id;
+  if (query_id == 0)
+    {
+      query_id = ++g_network_dns_id;
+    }
   size_t query_length = sizeof(struct dns_header_s);
   unsigned int poll_count;
   int sockfd;
@@ -735,6 +739,11 @@ static int network_ping_host(const char *hostname)
 
   memset(&packet, 0, sizeof(packet));
   ping_id = ++g_network_ping_id;
+  if (ping_id == 0)
+    {
+      ping_id = ++g_network_ping_id;
+    }
+
   packet.header.type = ICMP_ECHO_REQUEST;
   packet.header.id = htons(ping_id);
   packet.header.seqno = htons(1);
