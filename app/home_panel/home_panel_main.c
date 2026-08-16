@@ -2242,11 +2242,13 @@ static int refresh_family_model(
       return -EAGAIN;
     }
 
+  /* The client only hands out a new model when its revision changed, so a
+   * full 118 KiB memcmp here would always be true.  Compare the revision
+   * field instead and skip the expensive scan.
+   */
+
   changed = !g_family_model_valid ||
-            memcmp((const char *)&g_family_model +
-                   sizeof(g_family_model.revision),
-                   (const char *)model + sizeof(model->revision),
-                   sizeof(*model) - sizeof(model->revision)) != 0;
+            model->revision != g_family_model.revision;
   if (changed)
     {
       structure_changed = !g_family_model_valid ||
