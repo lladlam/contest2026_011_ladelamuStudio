@@ -2003,6 +2003,16 @@ static void mijia_publish_agent(
   const char *caution)
 {
   pthread_mutex_lock(&g_mijia.lock);
+
+  /* Release the busy flag regardless of generation so a worker started
+   * before a login re-generation cannot leave the agent permanently busy.
+   */
+
+  if (state != HOME_PANEL_AGENT_PENDING)
+    {
+      g_mijia.agent_busy = false;
+    }
+
   if (request->generation == g_mijia.request_generation)
     {
       g_mijia.agent_snapshot.state = state;
@@ -2023,10 +2033,6 @@ static void mijia_publish_agent(
                         sizeof(g_mijia.agent_snapshot.reasons), reasons);
       mijia_copy_string(g_mijia.agent_snapshot.caution,
                         sizeof(g_mijia.agent_snapshot.caution), caution);
-      if (state != HOME_PANEL_AGENT_PENDING)
-        {
-          g_mijia.agent_busy = false;
-        }
     }
   pthread_mutex_unlock(&g_mijia.lock);
 }
@@ -2513,9 +2519,12 @@ static void *mijia_agent_learning_worker(void *arg)
 
 out:
   pthread_mutex_lock(&g_mijia.lock);
+  /* The worker always releases the busy flag, even when it belongs to a
+   * superseded login generation, so learning cannot wedge permanently.
+   */
+  g_mijia.agent_learning_busy = false;
   if (request->generation == g_mijia.request_generation)
     {
-      g_mijia.agent_learning_busy = false;
       if (ret == 0)
         {
           g_mijia.agent_learning_completed_revision =
@@ -3217,10 +3226,10 @@ static void *mijia_board_agent_worker(void *arg)
 
 out:
   pthread_mutex_lock(&g_mijia.lock);
-  if (request->generation == g_mijia.request_generation)
-    {
-      g_mijia.board_agent_busy = false;
-    }
+  /* Always release the flag; a stale-generation worker must not wedge the
+   * board agent channel until the next login.
+   */
+  g_mijia.board_agent_busy = false;
   pthread_mutex_unlock(&g_mijia.lock);
   syslog(ret == 0 ? LOG_INFO : LOG_WARNING,
          "[HOME][AGENT] board request=%u ret=%d status=%u bytes=%u\n",
