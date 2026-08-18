@@ -5,14 +5,6 @@
   "generator": "extract-openvela-sessions",
   "sessions": [
     {
-      "session_id": "27-019f5195-4fb5-72a3-a2f9-fa47f10410db",
-      "tool": "codex",
-      "started_at": "2026-07-11T14:29:56.884Z",
-      "last_event_at": "2026-07-11T14:31:21.384Z",
-      "event_count": 100,
-      "file_path": "logs/lladlam/2026-07-11/codex__27-019f5195-4fb5-72a3-a2f9-fa47f10410db.jsonl"
-    },
-    {
       "session_id": "39-019f5199-277a-7380-a86d-c341cbed2a3c",
       "tool": "codex",
       "started_at": "2026-07-11T14:38:27.249Z",
@@ -117,30 +109,6 @@
       "file_path": "logs/lladlam/2026-07-13/codex__06-019f5ba8-091a-7a01-8439-77603ec10acb.jsonl"
     },
     {
-      "session_id": "44-019f5bb2-af7a-7b72-8253-7de5122d881f",
-      "tool": "codex",
-      "started_at": "2026-07-13T13:37:44.895Z",
-      "last_event_at": "2026-07-13T13:45:23.560Z",
-      "event_count": 366,
-      "file_path": "logs/lladlam/2026-07-13/codex__44-019f5bb2-af7a-7b72-8253-7de5122d881f.jsonl"
-    },
-    {
-      "session_id": "48-019f5bb2-bf70-7071-9df9-b4ca26fa3955",
-      "tool": "codex",
-      "started_at": "2026-07-13T13:37:48.946Z",
-      "last_event_at": "2026-07-13T13:41:55.333Z",
-      "event_count": 260,
-      "file_path": "logs/lladlam/2026-07-13/codex__48-019f5bb2-bf70-7071-9df9-b4ca26fa3955.jsonl"
-    },
-    {
-      "session_id": "54-019f5bb2-d4ac-7750-b9e3-482afa3b8010",
-      "tool": "codex",
-      "started_at": "2026-07-13T13:37:54.380Z",
-      "last_event_at": "2026-07-13T13:48:03.877Z",
-      "event_count": 381,
-      "file_path": "logs/lladlam/2026-07-13/codex__54-019f5bb2-d4ac-7750-b9e3-482afa3b8010.jsonl"
-    },
-    {
       "session_id": "36-019f6643-0538-7ea0-a93b-465b8d7ce2ea",
       "tool": "codex",
       "started_at": "2026-07-15T14:52:41.484Z",
@@ -191,13 +159,22 @@
       "file_path": "logs/lladlam/2026-08-03/mimocode__ses_0381398d9ffexDSgNRH7DX57KD.jsonl"
     },
     {
+      "session_id": "ses_0484b5c59ffeNNj2C6vIYCEFT9",
+      "tool": "mimocode",
+      "title": "安装llmly并适配Codex与MiMo Code",
+      "started_at": "2026-07-31 10:24:56",
+      "last_event_at": "2026-08-01 11:08:37",
+      "event_count": 764,
+      "file_path": "logs/lladlam/2026-07-31/mimocode__ses_0484b5c59ffeNNj2C6vIYCEFT9.jsonl"
+    },
+    {
       "session_id": "ses_0bd873020ffebL232gQSiABvNT",
       "tool": "opencode",
       "title": "OpenVela工作流管理器启动",
       "started_at": "2026-07-08 16:04:01",
       "last_event_at": "2026-07-11 14:40:12",
       "event_count": 2820,
-      "file_path": "logs/lladlam/2026-07-08/opencode__ses_0bd873020ffebL232gQSiABvNT.jsonl"
+      "file_path": "logs/lladlam/2026-07-08/mimocode__ses_0bd873020ffebL232gQSiABvNT.jsonl"
     },
     {
       "session_id": "ses_0d20d0dcfffeTvwFFtlrLBpIqi",
@@ -206,7 +183,7 @@
       "started_at": "2026-07-04 16:25:24",
       "last_event_at": "2026-07-08 16:01:57",
       "event_count": 2437,
-      "file_path": "logs/lladlam/2026-07-04/opencode__ses_0d20d0dcfffeTvwFFtlrLBpIqi.jsonl"
+      "file_path": "logs/lladlam/2026-07-04/mimocode__ses_0d20d0dcfffeTvwFFtlrLBpIqi.jsonl"
     },
     {
       "session_id": "ses_0d24e23a4ffeQ8duXMFprm3Oxr",
@@ -215,7 +192,7 @@
       "started_at": "2026-07-04 15:14:18",
       "last_event_at": "2026-07-04 15:54:11",
       "event_count": 990,
-      "file_path": "logs/lladlam/2026-07-04/opencode__ses_0d24e23a4ffeQ8duXMFprm3Oxr.jsonl"
+      "file_path": "logs/lladlam/2026-07-04/mimocode__ses_0d24e23a4ffeQ8duXMFprm3Oxr.jsonl"
     },
     {
       "session_id": "ses_0d258537dffeshW4JbkTT2m3Mn",
@@ -233,7 +210,7 @@
       "started_at": "2026-07-03 17:44:55",
       "last_event_at": "2026-07-03 18:34:15",
       "event_count": 1515,
-      "file_path": "logs/lladlam/2026-07-03/opencode__ses_0d6ea9bc7ffeP2ljGPevV9pvoB.jsonl"
+      "file_path": "logs/lladlam/2026-07-03/mimocode__ses_0d6ea9bc7ffeP2ljGPevV9pvoB.jsonl"
     },
     {
       "session_id": "ses_0d7201bbbffeEWJB9ZLn0Bv02t",
@@ -251,25 +228,7 @@
       "started_at": "2026-07-03 15:58:03",
       "last_event_at": "2026-07-03 17:44:39",
       "event_count": 2989,
-      "file_path": "logs/lladlam/2026-07-03/opencode__ses_0d74c7261ffe3NR1FciGGPq4LH.jsonl"
-    },
-    {
-      "session_id": "ses_0d771d7ebffeA9eA9a0D229uAU",
-      "tool": "mimocode",
-      "title": "新建工作树",
-      "started_at": "2026-07-03 15:17:12",
-      "last_event_at": "2026-07-04 15:00:45",
-      "event_count": 840,
-      "file_path": "logs/lladlam/2026-07-03/mimocode__ses_0d771d7ebffeA9eA9a0D229uAU.jsonl"
-    },
-    {
-      "session_id": "ses_0d78c63c2ffeNkHAiaUXB8koF7",
-      "tool": "mimocode",
-      "title": "启动 CC-Switch AppImage",
-      "started_at": "2026-07-03 14:48:13",
-      "last_event_at": "2026-07-03 15:08:19",
-      "event_count": 274,
-      "file_path": "logs/lladlam/2026-07-03/mimocode__ses_0d78c63c2ffeNkHAiaUXB8koF7.jsonl"
+      "file_path": "logs/lladlam/2026-07-03/mimocode__ses_0d74c7261ffe3NR1FciGGPq4LH.jsonl"
     },
     {
       "session_id": "ses_0dbeec773ffegM1V3GacCypcLT",
@@ -287,7 +246,16 @@
       "started_at": "2026-07-02 16:55:22",
       "last_event_at": "2026-07-02 18:01:02",
       "event_count": 2009,
-      "file_path": "logs/lladlam/2026-07-02/opencode__ses_0dc3e5400ffejbMmRQ7zePTb8r.jsonl"
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dc3e5400ffejbMmRQ7zePTb8r.jsonl"
+    },
+    {
+      "session_id": "ses_0dd2eb0acffenhbrjb3dTIE0IZ",
+      "tool": "mimocode",
+      "title": "Conversation title request",
+      "started_at": "2026-07-02 12:32:50",
+      "last_event_at": "2026-07-02 16:05:27",
+      "event_count": 981,
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dd2eb0acffenhbrjb3dTIE0IZ.jsonl"
     },
     {
       "session_id": "ses_0dd2eb0bcffeiuXLRxO6lndYvU",
@@ -296,7 +264,7 @@
       "started_at": "2026-07-02 12:32:50",
       "last_event_at": "2026-07-02 16:11:46",
       "event_count": 139,
-      "file_path": "logs/lladlam/2026-07-02/opencode__ses_0dd2eb0bcffeiuXLRxO6lndYvU.jsonl"
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dd2eb0bcffeiuXLRxO6lndYvU.jsonl"
     },
     {
       "session_id": "ses_0dd2eb12effewSCMOjcDyCObzH",
@@ -305,7 +273,7 @@
       "started_at": "2026-07-02 12:32:50",
       "last_event_at": "2026-07-02 16:11:46",
       "event_count": 67,
-      "file_path": "logs/lladlam/2026-07-02/opencode__ses_0dd2eb12effewSCMOjcDyCObzH.jsonl"
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dd2eb12effewSCMOjcDyCObzH.jsonl"
     },
     {
       "session_id": "ses_0e20f6941ffe3ySrSe4Lf5GorS",
@@ -314,7 +282,7 @@
       "started_at": "2026-07-01 13:48:54",
       "last_event_at": "2026-07-02 16:54:31",
       "event_count": 3293,
-      "file_path": "logs/lladlam/2026-07-01/opencode__ses_0e20f6941ffe3ySrSe4Lf5GorS.jsonl"
+      "file_path": "logs/lladlam/2026-07-01/mimocode__ses_0e20f6941ffe3ySrSe4Lf5GorS.jsonl"
     },
     {
       "session_id": "ses_0e7e767ecffe6uRJfgc7A6verz",
@@ -341,7 +309,7 @@
       "started_at": "2026-06-29 15:01:00",
       "last_event_at": "2026-06-30 14:42:51",
       "event_count": 5643,
-      "file_path": "logs/lladlam/2026-06-29/opencode__ses_0ec1a1fd4ffeql27SWB7VUIEiW.jsonl"
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0ec1a1fd4ffeql27SWB7VUIEiW.jsonl"
     },
     {
       "session_id": "ses_0ec63945fffe1UrepbVVO6M4At",
@@ -350,7 +318,7 @@
       "started_at": "2026-06-29 13:40:46",
       "last_event_at": "2026-06-29 14:43:20",
       "event_count": 955,
-      "file_path": "logs/lladlam/2026-06-29/opencode__ses_0ec63945fffe1UrepbVVO6M4At.jsonl"
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0ec63945fffe1UrepbVVO6M4At.jsonl"
     },
     {
       "session_id": "ses_0eccf81faffetAOtjxWGfZU5Rf",
@@ -359,7 +327,7 @@
       "started_at": "2026-06-29 11:42:52",
       "last_event_at": "2026-06-29 11:56:33",
       "event_count": 339,
-      "file_path": "logs/lladlam/2026-06-29/opencode__ses_0eccf81faffetAOtjxWGfZU5Rf.jsonl"
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0eccf81faffetAOtjxWGfZU5Rf.jsonl"
     },
     {
       "session_id": "ses_0ed22c78fffeM06GTGizBuCed8",
@@ -368,7 +336,7 @@
       "started_at": "2026-06-29 10:11:55",
       "last_event_at": "2026-06-29 11:37:38",
       "event_count": 902,
-      "file_path": "logs/lladlam/2026-06-29/opencode__ses_0ed22c78fffeM06GTGizBuCed8.jsonl"
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0ed22c78fffeM06GTGizBuCed8.jsonl"
     },
     {
       "session_id": "ses_0f69c978effeTtPdBM1AXrynAO",
@@ -377,7 +345,16 @@
       "started_at": "2026-06-27 14:02:17",
       "last_event_at": "2026-06-29 12:50:07",
       "event_count": 3239,
-      "file_path": "logs/lladlam/2026-06-27/opencode__ses_0f69c978effeTtPdBM1AXrynAO.jsonl"
+      "file_path": "logs/lladlam/2026-06-27/mimocode__ses_0f69c978effeTtPdBM1AXrynAO.jsonl"
+    },
+    {
+      "session_id": "ses_0fbbd914cffevVDpb3ZOeMLEza",
+      "tool": "mimocode",
+      "title": "安装 aiot-ide-1.99.3 和 jre-8u491",
+      "started_at": "2026-06-26 14:08:10",
+      "last_event_at": "2026-06-26 14:32:08",
+      "event_count": 85,
+      "file_path": "logs/lladlam/2026-06-26/mimocode__ses_0fbbd914cffevVDpb3ZOeMLEza.jsonl"
     },
     {
       "session_id": "ses_0fd798a7dffelp6Jzwj1zAQZet",
@@ -386,7 +363,7 @@
       "started_at": "2026-06-26 06:03:14",
       "last_event_at": "2026-06-27 14:04:23",
       "event_count": 2249,
-      "file_path": "logs/lladlam/2026-06-26/opencode__ses_0fd798a7dffelp6Jzwj1zAQZet.jsonl"
+      "file_path": "logs/lladlam/2026-06-26/mimocode__ses_0fd798a7dffelp6Jzwj1zAQZet.jsonl"
     },
     {
       "session_id": "ses_10ac300cbffeQ02VaimpYu0pjj",
@@ -395,7 +372,7 @@
       "started_at": "2026-06-23 16:07:55",
       "last_event_at": "2026-06-26 09:14:20",
       "event_count": 5411,
-      "file_path": "logs/lladlam/2026-06-23/opencode__ses_10ac300cbffeQ02VaimpYu0pjj.jsonl"
+      "file_path": "logs/lladlam/2026-06-23/mimocode__ses_10ac300cbffeQ02VaimpYu0pjj.jsonl"
     },
     {
       "session_id": "ses_10adb2868ffejCzi4xSuZVRSxU",
@@ -404,7 +381,7 @@
       "started_at": "2026-06-23 15:41:32",
       "last_event_at": "2026-06-23 17:48:41",
       "event_count": 457,
-      "file_path": "logs/lladlam/2026-06-23/opencode__ses_10adb2868ffejCzi4xSuZVRSxU.jsonl"
+      "file_path": "logs/lladlam/2026-06-23/mimocode__ses_10adb2868ffejCzi4xSuZVRSxU.jsonl"
     },
     {
       "session_id": "ses_10adbf606ffe5KRBwFH5km4xPI",
@@ -414,6 +391,46 @@
       "last_event_at": "2026-06-23 17:48:41",
       "event_count": 2,
       "file_path": "logs/lladlam/2026-06-23/mimocode__ses_10adbf606ffe5KRBwFH5km4xPI.jsonl"
+    },
+    {
+      "session_id": "ses_0fb9d969bffe0hVU9RgReCl7Ht",
+      "tool": "mimocode",
+      "started_at": "2026-06-26 14:43:06",
+      "file_path": "logs/lladlam/2026-06-26/mimocode__ses_0fb9d969bffe0hVU9RgReCl7Ht.jsonl",
+      "title": "给我安装7-zip",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_0436d9350ffeh3pY7n0w9b8NtJ",
+      "tool": "mimocode",
+      "started_at": "2026-08-01 09:05:40",
+      "file_path": "logs/lladlam/2026-08-01/mimocode__ses_0436d9350ffeh3pY7n0w9b8NtJ.jsonl",
+      "title": "请使用 JADX 和 Apktool 对当前 APK 进行静态分析。\n\n目标不是分析业务接口或安全漏洞，而是还原应用的 UI 设计系统。\n\n请完成：\n1. 判断 UI 技术栈。\n2. 枚举全部页面、弹",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_04368ace6ffezQd3HehVgsv6tq",
+      "tool": "mimocode",
+      "started_at": "2026-08-01 09:11:01",
+      "file_path": "logs/lladlam/2026-08-01/mimocode__ses_04368ace6ffezQd3HehVgsv6tq.jsonl",
+      "title": "请使用 JADX 和 Apktool 对当前 APK 进行静态分析。\n\n目标不是分析业务接口或安全漏洞，而是还原应用的 UI 设计系统。\n\n请完成：\n1. 判断 UI 技术栈。\n2. 枚举全部页面、弹",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_07b272357ffehwDOCiUntA36cE",
+      "tool": "mimocode",
+      "started_at": "2026-07-21 13:23:52",
+      "file_path": "logs/lladlam/2026-07-21/mimocode__ses_07b272357ffehwDOCiUntA36cE.jsonl",
+      "title": "帮我修复一下输入法，我现在一切换到微信，QQ,VS Code,AIoT-IDE这些就没办法输入中文，任务栏上写着已开启中文，但是我在浏览器和终端中又可以使用",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_106cc5898ffe3qwreQVgGmDWrc",
+      "tool": "mimocode",
+      "started_at": "2026-06-24 10:36:12",
+      "file_path": "logs/lladlam/2026-06-24/mimocode__ses_106cc5898ffe3qwreQVgGmDWrc.jsonl",
+      "title": "更改x-ray设置，将artinchip.com（包括二/三/四级域名）排除在代理名单内，使用代理无法访问",
+      "source": "staging-sync"
     },
     {
       "session_id": "ses_1073350b4ffeTCPfe1am8yu6TC",
@@ -444,6 +461,70 @@
       "tool": "codex",
       "started_at": "2026-07-11T14:38:27.340Z",
       "file_path": "logs/lladlam/2026-07-11/codex__019f5199-277a-7380-a86d-c341cbed2a3c.jsonl",
+      "title": "No title",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_10a688f17ffeyMW11cYdAp2lFr",
+      "tool": "mimocode",
+      "started_at": "2026-06-23 17:46:43",
+      "file_path": "logs/lladlam/2026-06-23/mimocode__ses_10a688f17ffeyMW11cYdAp2lFr.jsonl",
+      "title": "下载飞书，安装",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_03a3b59d9ffesvHZNqwmW2SiA1",
+      "tool": "mimocode",
+      "started_at": "2026-08-03 03:57:07",
+      "file_path": "logs/lladlam/2026-08-03/mimocode__ses_03a3b59d9ffesvHZNqwmW2SiA1.jsonl",
+      "title": "帮我挂载两个NTFS盘，密码我自己来输",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_0e71a7377ffeeXBxlZ8Oqn9m74",
+      "tool": "mimocode",
+      "started_at": "2026-06-30 14:18:44",
+      "file_path": "logs/lladlam/2026-06-30/mimocode__ses_0e71a7377ffeeXBxlZ8Oqn9m74.jsonl",
+      "title": "No title",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_0f0dfab82ffeUCSV8437UWY7EM",
+      "tool": "mimocode",
+      "started_at": "2026-06-28 16:46:44",
+      "file_path": "logs/lladlam/2026-06-28/mimocode__ses_0f0dfab82ffeUCSV8437UWY7EM.jsonl",
+      "title": "关闭Arch的自动锁定和休眠功能，始终开启电脑",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_0f2dee467ffeB7eMpk6qV86fAP",
+      "tool": "mimocode",
+      "started_at": "2026-06-28 07:28:21",
+      "file_path": "logs/lladlam/2026-06-28/mimocode__ses_0f2dee467ffeB7eMpk6qV86fAP.jsonl",
+      "title": "fetch下open.lladlam.top",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_048620629ffeGbKF0mCShFeBNL",
+      "tool": "mimocode",
+      "started_at": "2026-07-31 10:00:11",
+      "file_path": "logs/lladlam/2026-07-31/mimocode__ses_048620629ffeGbKF0mCShFeBNL.jsonl",
+      "title": "进入Facetory项目文件夹，然后按照README内容构建产品，是Linux端",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_0cce301a4ffeMNvOCqrpBz5GhQ",
+      "tool": "mimocode",
+      "started_at": "2026-07-05 16:29:26",
+      "file_path": "logs/lladlam/2026-07-05/mimocode__ses_0cce301a4ffeMNvOCqrpBz5GhQ.jsonl",
+      "title": "帮我把/home/lladlam/1.21.1-NeoForge.mrpack，/home/lladlam/1.21.1-NeoForge.mrpack.sig，/home/lladlam/lyyh0",
+      "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_09a19c5cbffebBE8MQUkZZ60om",
+      "tool": "mimocode",
+      "started_at": "2026-07-15 13:10:14",
+      "file_path": "logs/lladlam/2026-07-15/mimocode__ses_09a19c5cbffebBE8MQUkZZ60om.jsonl",
       "title": "No title",
       "source": "staging-sync"
     }

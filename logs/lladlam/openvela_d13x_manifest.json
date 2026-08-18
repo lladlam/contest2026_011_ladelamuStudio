@@ -1,0 +1,179 @@
+{
+  "schema_version": "1.0",
+  "team_id": "contest2026_011_ladelamuStudio",
+  "github_login": "lladlam",
+  "generator": "extract-openvela-sessions",
+  "sessions": [
+    {
+      "session_id": "ses_0381398d9ffexDSgNRH7DX57KD",
+      "tool": "mimocode",
+      "title": "openvela AI Contest Log Collector",
+      "started_at": "2026-08-03 13:59:46",
+      "last_event_at": "2026-08-03 14:15:33",
+      "event_count": 162,
+      "file_path": "logs/lladlam/2026-08-03/mimocode__ses_0381398d9ffexDSgNRH7DX57KD.jsonl"
+    },
+    {
+      "session_id": "ses_0bd873020ffebL232gQSiABvNT",
+      "tool": "mimocode",
+      "title": "OpenVela工作流管理器启动",
+      "started_at": "2026-07-08 16:04:01",
+      "last_event_at": "2026-07-11 14:40:12",
+      "event_count": 2820,
+      "file_path": "logs/lladlam/2026-07-08/mimocode__ses_0bd873020ffebL232gQSiABvNT.jsonl"
+    },
+    {
+      "session_id": "ses_0d20d0dcfffeTvwFFtlrLBpIqi",
+      "tool": "mimocode",
+      "title": "OpenVela D13x workflow manager",
+      "started_at": "2026-07-04 16:25:24",
+      "last_event_at": "2026-07-08 16:01:57",
+      "event_count": 2437,
+      "file_path": "logs/lladlam/2026-07-04/mimocode__ses_0d20d0dcfffeTvwFFtlrLBpIqi.jsonl"
+    },
+    {
+      "session_id": "ses_0d24e23a4ffeQ8duXMFprm3Oxr",
+      "tool": "mimocode",
+      "title": "OpenVela D13x Porting Workflow Manager",
+      "started_at": "2026-07-04 15:14:18",
+      "last_event_at": "2026-07-04 15:54:11",
+      "event_count": 990,
+      "file_path": "logs/lladlam/2026-07-04/mimocode__ses_0d24e23a4ffeQ8duXMFprm3Oxr.jsonl"
+    },
+    {
+      "session_id": "ses_0d258537dffeshW4JbkTT2m3Mn",
+      "tool": "mimocode",
+      "title": "串口连接及日志查看方法",
+      "started_at": "2026-07-04 15:03:11",
+      "last_event_at": "2026-07-04 15:13:46",
+      "event_count": 290,
+      "file_path": "logs/lladlam/2026-07-04/mimocode__ses_0d258537dffeshW4JbkTT2m3Mn.jsonl"
+    },
+    {
+      "session_id": "ses_0d6ea9bc7ffeP2ljGPevV9pvoB",
+      "tool": "mimocode",
+      "title": "OpenVela D13x Porting Workflow Manager",
+      "started_at": "2026-07-03 17:44:55",
+      "last_event_at": "2026-07-03 18:34:15",
+      "event_count": 1515,
+      "file_path": "logs/lladlam/2026-07-03/mimocode__ses_0d6ea9bc7ffeP2ljGPevV9pvoB.jsonl"
+    },
+    {
+      "session_id": "ses_0d74c7261ffe3NR1FciGGPq4LH",
+      "tool": "mimocode",
+      "title": "OpenVela 开发：代码审查、固件构建、移植",
+      "started_at": "2026-07-03 15:58:03",
+      "last_event_at": "2026-07-03 17:44:39",
+      "event_count": 2989,
+      "file_path": "logs/lladlam/2026-07-03/mimocode__ses_0d74c7261ffe3NR1FciGGPq4LH.jsonl"
+    },
+    {
+      "session_id": "ses_0dbeec773ffegM1V3GacCypcLT",
+      "tool": "mimocode",
+      "title": "串口连接",
+      "started_at": "2026-07-02 18:22:16",
+      "last_event_at": "2026-07-03 07:43:23",
+      "event_count": 623,
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dbeec773ffegM1V3GacCypcLT.jsonl"
+    },
+    {
+      "session_id": "ses_0dc3e5400ffejbMmRQ7zePTb8r",
+      "tool": "mimocode",
+      "title": "D13x衡山派LCD与GT911驱动移植",
+      "started_at": "2026-07-02 16:55:22",
+      "last_event_at": "2026-07-02 18:01:02",
+      "event_count": 2009,
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dc3e5400ffejbMmRQ7zePTb8r.jsonl"
+    },
+    {
+      "session_id": "ses_0dd2eb12effewSCMOjcDyCObzH",
+      "tool": "mimocode",
+      "title": "阅读OpenVela文档与luban-lite",
+      "started_at": "2026-07-02 12:32:50",
+      "last_event_at": "2026-07-02 16:11:46",
+      "event_count": 67,
+      "file_path": "logs/lladlam/2026-07-02/mimocode__ses_0dd2eb12effewSCMOjcDyCObzH.jsonl"
+    },
+    {
+      "session_id": "ses_0e20f6941ffe3ySrSe4Lf5GorS",
+      "tool": "mimocode",
+      "title": "OpenVela D13x and OpenVela documentation review",
+      "started_at": "2026-07-01 13:48:54",
+      "last_event_at": "2026-07-02 16:54:31",
+      "event_count": 3293,
+      "file_path": "logs/lladlam/2026-07-01/mimocode__ses_0e20f6941ffe3ySrSe4Lf5GorS.jsonl"
+    },
+    {
+      "session_id": "ses_0e7e767ecffe6uRJfgc7A6verz",
+      "tool": "mimocode",
+      "title": "串口连接开发板",
+      "started_at": "2026-06-30 10:34:52",
+      "last_event_at": "2026-06-30 14:23:15",
+      "event_count": 392,
+      "file_path": "logs/lladlam/2026-06-30/mimocode__ses_0e7e767ecffe6uRJfgc7A6verz.jsonl"
+    },
+    {
+      "session_id": "ses_0e8169710ffeBvo9aSM5Tjo4W4",
+      "tool": "mimocode",
+      "title": "OpenVela文件夹7Z压缩至最小",
+      "started_at": "2026-06-30 09:43:20",
+      "last_event_at": "2026-06-30 09:44:25",
+      "event_count": 21,
+      "file_path": "logs/lladlam/2026-06-30/mimocode__ses_0e8169710ffeBvo9aSM5Tjo4W4.jsonl"
+    },
+    {
+      "session_id": "ses_0ec1a1fd4ffeql27SWB7VUIEiW",
+      "tool": "mimocode",
+      "title": "OpenVela硬件系统移植学习",
+      "started_at": "2026-06-29 15:01:00",
+      "last_event_at": "2026-06-30 14:42:51",
+      "event_count": 5643,
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0ec1a1fd4ffeql27SWB7VUIEiW.jsonl"
+    },
+    {
+      "session_id": "ses_0ec63945fffe1UrepbVVO6M4At",
+      "tool": "mimocode",
+      "title": "阅读d13x-doc与docs系统移植",
+      "started_at": "2026-06-29 13:40:46",
+      "last_event_at": "2026-06-29 14:43:20",
+      "event_count": 955,
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0ec63945fffe1UrepbVVO6M4At.jsonl"
+    },
+    {
+      "session_id": "ses_0ed22c78fffeM06GTGizBuCed8",
+      "tool": "mimocode",
+      "title": "阅读d13x-doc",
+      "started_at": "2026-06-29 10:11:55",
+      "last_event_at": "2026-06-29 11:37:38",
+      "event_count": 902,
+      "file_path": "logs/lladlam/2026-06-29/mimocode__ses_0ed22c78fffeM06GTGizBuCed8.jsonl"
+    },
+    {
+      "session_id": "ses_0fd798a7dffelp6Jzwj1zAQZet",
+      "tool": "mimocode",
+      "title": "Porting openvela to D13x RISC-V for contest",
+      "started_at": "2026-06-26 06:03:14",
+      "last_event_at": "2026-06-27 14:04:23",
+      "event_count": 2249,
+      "file_path": "logs/lladlam/2026-06-26/mimocode__ses_0fd798a7dffelp6Jzwj1zAQZet.jsonl"
+    },
+    {
+      "session_id": "ses_10ac300cbffeQ02VaimpYu0pjj",
+      "tool": "mimocode",
+      "title": "2026大赛D13x硬件移植文档阅读",
+      "started_at": "2026-06-23 16:07:55",
+      "last_event_at": "2026-06-26 09:14:20",
+      "event_count": 5411,
+      "file_path": "logs/lladlam/2026-06-23/mimocode__ses_10ac300cbffeQ02VaimpYu0pjj.jsonl"
+    },
+    {
+      "session_id": "ses_10adb2868ffejCzi4xSuZVRSxU",
+      "tool": "mimocode",
+      "title": "D13x移植任务：克隆contest_2026文件夹",
+      "started_at": "2026-06-23 15:41:32",
+      "last_event_at": "2026-06-23 17:48:41",
+      "event_count": 457,
+      "file_path": "logs/lladlam/2026-06-23/mimocode__ses_10adb2868ffejCzi4xSuZVRSxU.jsonl"
+    }
+  ]
+}
