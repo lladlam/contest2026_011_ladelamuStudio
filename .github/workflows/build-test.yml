@@ -136,35 +136,19 @@ jobs:
           test -s "$elf"
           sha256sum "$image" "$elf" | sed 's#  .*/#  #' > SHA256SUMS
 
-          tag_sha=""
-          if existing_tag_sha=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
-            --jq '.object.sha' 2>/dev/null); then
-            if [[ ! "$existing_tag_sha" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "标签 ${RELEASE_TAG} 返回了无效 SHA: ${existing_tag_sha}" >&2
-              exit 1
-            fi
-
-            tag_sha="$existing_tag_sha"
-          fi
-          if [[ -n "$tag_sha" && "$tag_sha" != "$GITHUB_SHA" ]]; then
-            if gh release view "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "::notice::版本 ${RELEASE_VERSION} 已由 ${tag_sha} 发布；当前提交不重复生成固件 Release"
-              exit 0
-            fi
-
-            echo "标签 ${RELEASE_TAG} 已指向 ${tag_sha}，但对应 Release 不存在" >&2
-            exit 1
-          fi
+          # gh api returns the annotated tag *object* SHA, not the commit SHA,
+          # so comparing it with GITHUB_SHA always fails.  Instead, simply
+          # check whether a Release already exists for this tag.
 
           if gh release view "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "D13x Hengshan-Pi ${RELEASE_VERSION}" \
-              --notes-file release-notes.md
-          elif [[ -n "$tag_sha" ]]; then
+            echo "::notice::版本 ${RELEASE_VERSION} 已发布（Release 已存在），跳过创建"
+            exit 0
+          fi
+
+          if gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+            >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "D13x Hengshan-Pi ${RELEASE_VERSION}" \
