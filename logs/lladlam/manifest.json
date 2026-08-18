@@ -446,6 +446,138 @@
       "file_path": "logs/lladlam/2026-07-11/codex__019f5199-277a-7380-a86d-c341cbed2a3c.jsonl",
       "title": "No title",
       "source": "staging-sync"
+    },
+    {
+      "session_id": "ses_fec89c563ffeL3JnNH7gFHHfp9",
+      "tool": "opencode",
+      "started_at": "2026-08-18T14:01:50.492000",
+      "last_event_at": "2026-08-18T15:01:46.781000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-18/opencode__ses_fec89c563ffeL3JnNH7gFHHfp9.jsonl",
+      "title": "AI日志存放位置扫描",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"mimo-v2.5-free\",\"providerID\":\"opencode\",\"variant\":\"default\"}"
+    },
+    {
+      "session_id": "ses_fee9d3e5fffeaEZ9bgg7Vdo0ub",
+      "tool": "opencode",
+      "started_at": "2026-08-18T04:21:19.904000",
+      "last_event_at": "2026-08-18T04:25:23.698000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-18/opencode__ses_fee9d3e5fffeaEZ9bgg7Vdo0ub.jsonl",
+      "title": "Find player UI layout code (@explore subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"mimo-v2.5\",\"providerID\":\"opencode-go\",\"variant\":\"default\"}"
+    },
+    {
+      "session_id": "ses_ff3019203ffeyuyigc61CA2EWu",
+      "tool": "opencode",
+      "started_at": "2026-08-17T07:53:16.028000",
+      "last_event_at": "2026-08-17T07:57:35.613000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-17/opencode__ses_ff3019203ffeyuyigc61CA2EWu.jsonl",
+      "title": "复查 mijia 最终代码 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff301a508ffehsyiVoLDPn9dux",
+      "tool": "opencode",
+      "started_at": "2026-08-17T07:53:11.159000",
+      "last_event_at": "2026-08-17T08:02:43.969000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-17/opencode__ses_ff301a508ffehsyiVoLDPn9dux.jsonl",
+      "title": "复查 UI 最终代码 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff4d974d9ffe4qms0qr81C8jen",
+      "tool": "opencode",
+      "started_at": "2026-08-16T23:17:50.502000",
+      "last_event_at": "2026-08-16T23:46:17.456000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff4d974d9ffe4qms0qr81C8jen.jsonl",
+      "title": "审查 mijia 服务端 API (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff50e6e47ffe3YGBgRQPeQjs1W",
+      "tool": "opencode",
+      "started_at": "2026-08-16T22:19:58.776000",
+      "last_event_at": "2026-08-16T22:35:59.354000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff50e6e47ffe3YGBgRQPeQjs1W.jsonl",
+      "title": "审查 mijia 服务端代码 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff50eb1cbffeNIik4JCy4o8SXY",
+      "tool": "opencode",
+      "started_at": "2026-08-16T22:19:41.492000",
+      "last_event_at": "2026-08-16T23:17:12.002000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff50eb1cbffeNIik4JCy4o8SXY.jsonl",
+      "title": "审查 D13x UI 应用代码 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff548c291ffeb67iI2NQNAWDLf",
+      "tool": "opencode",
+      "started_at": "2026-08-16T21:16:16.110000",
+      "last_event_at": "2026-08-16T21:22:03.926000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff548c291ffeb67iI2NQNAWDLf.jsonl",
+      "title": "审查网络/持久化/板级代码 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff5492f0fffe1kDzJgs0HtGLKw",
+      "tool": "opencode",
+      "started_at": "2026-08-16T21:15:48.336000",
+      "last_event_at": "2026-08-16T21:26:42.771000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff5492f0fffe1kDzJgs0HtGLKw.jsonl",
+      "title": "审查显示/触摸/I2C 驱动 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff54a3b0cffebw7NyaCyDEPaA2",
+      "tool": "opencode",
+      "started_at": "2026-08-16T21:14:39.731000",
+      "last_event_at": "2026-08-16T22:10:45.523000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff54a3b0cffebw7NyaCyDEPaA2.jsonl",
+      "title": "审查 D13x 启动/串口/中断/定时器 (@general subagent)",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"deepseek-v4-flash\",\"providerID\":\"opencode-go\",\"variant\":\"max\"}"
+    },
+    {
+      "session_id": "ses_ff55b7d9effeSkPoE3sFtRg59w",
+      "tool": "opencode",
+      "started_at": "2026-08-16T20:55:48.577000",
+      "last_event_at": "2026-08-18T14:59:31.253000",
+      "event_count": 0,
+      "file_path": "logs/lladlam/2026-08-16/opencode__ses_ff55b7d9effeSkPoE3sFtRg59w.jsonl",
+      "title": "openvela与Codex CLI记忆查看",
+      "collection_mode": "manual",
+      "health": "ok",
+      "model": "{\"id\":\"mimo-v2.5\",\"providerID\":\"xiaomi-token-plan-cn\",\"variant\":\"default\"}"
     }
   ]
 }
